@@ -1,0 +1,2 @@
+import { MoneyFlow } from '@/components/ontology/money-flow';
+export default function Page() { return <main className="mx-auto max-w-7xl px-6 py-10 lg:px-10"><div className="mb-10"><p className="label mb-3">Household office · Money flow</p><h1 className="serif text-5xl">Ontology</h1><p className="mt-4 max-w-2xl text-sm leading-6 text-ink/60">How income moves through household accounts, savings, cards, and expenses.</p></div><MoneyFlow /></main>; }

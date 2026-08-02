@@ -1,0 +1,18 @@
+create extension if not exists "pgcrypto";
+create type public.household_owner as enum ('alston','wife','joint');
+create type public.account_bucket as enum ('needs','wants','joint');
+create type public.account_kind as enum ('debit','credit','checking');
+create table public.profiles (id uuid primary key references auth.users(id) on delete cascade, display_name text, created_at timestamptz not null default now());
+create table public.accounts (id uuid primary key default gen_random_uuid(), name text not null, institution text not null, owner public.household_owner not null, account_type public.account_kind not null, bucket public.account_bucket not null, plaid_account_id text, plaid_item_id text, created_at timestamptz not null default now());
+create table public.categories (id uuid primary key default gen_random_uuid(), name text not null, parent_category text not null check (parent_category in ('wants','needs','savings')), monthly_budget numeric not null default 0, created_at timestamptz not null default now());
+create table public.transactions (id uuid primary key default gen_random_uuid(), date date not null, name text not null, original_description text not null, amount numeric not null, category_id uuid references public.categories(id) on delete set null, owner public.household_owner not null, account_id uuid not null references public.accounts(id) on delete cascade, is_ignored boolean not null default false, is_manually_edited boolean not null default false, plaid_transaction_id text, pending boolean not null default false, notes text, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+create table public.rules (id uuid primary key default gen_random_uuid(), match_pattern text not null, apply_category_id uuid not null references public.categories(id) on delete cascade, apply_name text, created_at timestamptz not null default now());
+create table public.upcoming_expenses (id uuid primary key default gen_random_uuid(), name text not null, amount numeric not null, target_date date not null, added_by public.household_owner not null, created_at timestamptz not null default now());
+create table public.plaid_items (id uuid primary key default gen_random_uuid(), item_id text not null unique, access_token text not null, institution_name text, created_at timestamptz not null default now());
+alter table public.profiles enable row level security; alter table public.accounts enable row level security; alter table public.categories enable row level security; alter table public.transactions enable row level security; alter table public.rules enable row level security; alter table public.upcoming_expenses enable row level security; alter table public.plaid_items enable row level security;
+create policy "authenticated household access" on public.profiles for all to authenticated using (true) with check (true);
+create policy "authenticated household access" on public.accounts for all to authenticated using (true) with check (true);
+create policy "authenticated household access" on public.categories for all to authenticated using (true) with check (true);
+create policy "authenticated household access" on public.transactions for all to authenticated using (true) with check (true);
+create policy "authenticated household access" on public.rules for all to authenticated using (true) with check (true);
+create policy "authenticated household access" on public.upcoming_expenses for all to authenticated using (true) with check (true);

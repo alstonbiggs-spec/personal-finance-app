@@ -1,0 +1,1 @@
+export function Placeholder({ title }: { title: string }) { return <main className="mx-auto flex min-h-[calc(100vh-81px)] max-w-7xl flex-col items-center justify-center px-6"><p className="label mb-5">Household office</p><h1 className="serif text-5xl">{title}</h1><p className="mt-5 text-sm text-ink/50">Coming soon</p></main>; }

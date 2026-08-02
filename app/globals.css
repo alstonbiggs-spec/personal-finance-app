@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { background: #f5f3ee; color: #18231f; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f5f3ee; font-family: Arial, sans-serif; }
+button, select, input { font: inherit; }
+.serif { font-family: Georgia, serif; }
+.hairline { border-color: rgba(24,35,31,.14); }
+@layer components {
+  .button-primary { @apply rounded-sm bg-forest px-4 py-2 text-xs uppercase tracking-[.14em] text-white transition hover:bg-ink; }
+  .button-quiet { @apply rounded-sm border hairline px-4 py-2 text-xs uppercase tracking-[.14em] text-ink transition hover:bg-white; }
+  .label { @apply text-[10px] uppercase tracking-[.18em] text-ink/50; }
+}
