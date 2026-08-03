@@ -1,6 +1,6 @@
 # Household Office
 
-Private household finance dashboard built with Next.js App Router, TypeScript, Tailwind, Supabase, Plaid Sandbox, and Recharts.
+Private household finance dashboard built with Next.js App Router, TypeScript, Tailwind, Supabase, Plaid Transactions, and Recharts.
 
 ## Local setup
 
@@ -9,4 +9,4 @@ Private household finance dashboard built with Next.js App Router, TypeScript, T
 3. Create the two email/password users manually in Supabase Auth, then add matching rows to `profiles`.
 4. Run `npm install` and `npm run dev`.
 
-The Plaid exchange endpoint currently validates receipt of the public token and returns metadata. Before using it with real household data, persist the exchanged access token in a server-only store (never a client-readable table) and insert the linked account through the service-role client.
+For production, set `PLAID_ENV=production`, use production Plaid credentials, and set `PLAID_WEBHOOK_URL` to the deployed `/api/plaid/webhook` endpoint. Linked Items are initialized with `/transactions/sync`; subsequent transaction updates are received through Plaid webhooks and persisted in Supabase.

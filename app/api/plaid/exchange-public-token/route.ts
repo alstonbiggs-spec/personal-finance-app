@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { Configuration, PlaidApi, PlaidEnvironments } from 'plaid';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
+import { getPlaidClient } from '@/lib/plaid/client';
+import { syncPlaidItem } from '@/lib/plaid/sync';
 
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -12,10 +13,7 @@ export async function POST(request: Request) {
   if (!process.env.PLAID_CLIENT_ID || !process.env.PLAID_SECRET || !process.env.SUPABASE_SERVICE_ROLE_KEY) return NextResponse.json({ error: 'Server integration is not configured.' }, { status: 500 });
 
   try {
-    const environment = process.env.PLAID_ENV === 'production' ? PlaidEnvironments.production : process.env.PLAID_ENV === 'development' ? PlaidEnvironments.development : PlaidEnvironments.sandbox;
-    const config = new Configuration({ basePath: environment, baseOptions: { headers: { 'PLAID-CLIENT-ID': process.env.PLAID_CLIENT_ID, 'PLAID-SECRET': process.env.PLAID_SECRET } } });
-    const plaid = new PlaidApi(config);
-    const exchanged = await plaid.itemPublicTokenExchange({ public_token });
+    const exchanged = await getPlaidClient().itemPublicTokenExchange({ public_token });
     const admin = createAdminClient();
     const institutionName = metadata?.institution?.name ?? 'Connected institution';
     const { error: itemError } = await admin.from('plaid_items').upsert({ item_id: exchanged.data.item_id, access_token: exchanged.data.access_token, institution_name: institutionName }, { onConflict: 'item_id' });
@@ -25,7 +23,9 @@ export async function POST(request: Request) {
       const { error: accountError } = await admin.from('accounts').upsert({ name: account.name, institution: institutionName, owner: 'joint', account_type: accountType, bucket: 'joint', plaid_account_id: account.id, plaid_item_id: exchanged.data.item_id }, { onConflict: 'plaid_account_id' });
       if (accountError) throw accountError;
     }
-    return NextResponse.json({ ok: true, message: `${institutionName} connected.` });
+    let sync = null;
+    try { sync = await syncPlaidItem(exchanged.data.item_id); } catch (syncError) { console.error('Initial Plaid transaction sync failed', syncError); }
+    return NextResponse.json({ ok: true, message: `${institutionName} connected.`, sync });
   } catch (error) {
     console.error('Plaid connection failed', error);
     return NextResponse.json({ error: 'Plaid could not finish connecting this institution.' }, { status: 502 });
