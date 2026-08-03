@@ -120,6 +120,15 @@ export async function recoverOrphanedPlaidItems() {
   }
 }
 
+export async function syncAllPlaidItems() {
+  const admin = createAdminClient();
+  const { data: items, error } = await admin.from('plaid_items').select('item_id');
+  if (error) throw error;
+  const results = [];
+  for (const item of items ?? []) results.push({ itemId: item.item_id, result: await syncPlaidItem(item.item_id) });
+  return results;
+}
+
 function toTransactionRow(transaction: PlaidTransaction, accountId: string | undefined) {
   if (!accountId) return null;
   return {
