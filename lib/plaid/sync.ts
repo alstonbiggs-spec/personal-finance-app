@@ -81,6 +81,45 @@ export async function syncPlaidItem(itemId: string) {
   return { added, modified, removed };
 }
 
+export async function hydratePlaidItemAccounts(itemId: string, institutionName = 'Connected institution') {
+  const admin = createAdminClient();
+  const { data: item, error: itemError } = await admin.from('plaid_items').select('access_token').eq('item_id', itemId).single<{ access_token: string }>();
+  if (itemError || !item) throw itemError ?? new Error('Plaid Item was not found.');
+  const response = await getPlaidClient().accountsGet({ access_token: item.access_token });
+  for (const account of response.data.accounts) {
+    const accountType = account.type === 'credit' ? 'credit' : account.type === 'depository' ? 'checking' : 'debit';
+    const { error } = await admin.from('accounts').upsert({
+      name: account.name,
+      institution: institutionName,
+      owner: 'joint',
+      account_type: accountType,
+      bucket: 'joint',
+      plaid_account_id: account.account_id,
+      plaid_item_id: itemId,
+      current_balance: account.balances.current,
+      available_balance: account.balances.available,
+      balance_updated_at: new Date().toISOString(),
+    }, { onConflict: 'plaid_account_id' });
+    if (error) throw error;
+  }
+}
+
+export async function recoverOrphanedPlaidItems() {
+  const admin = createAdminClient();
+  const [{ data: items, error: itemsError }, { data: accounts, error: accountsError }] = await Promise.all([
+    admin.from('plaid_items').select('item_id,institution_name'),
+    admin.from('accounts').select('plaid_item_id'),
+  ]);
+  if (itemsError) throw itemsError;
+  if (accountsError) throw accountsError;
+  const linkedItemIds = new Set((accounts ?? []).map((account) => account.plaid_item_id));
+  for (const item of items ?? []) {
+    if (linkedItemIds.has(item.item_id)) continue;
+    await hydratePlaidItemAccounts(item.item_id, item.institution_name ?? undefined);
+    await syncPlaidItem(item.item_id);
+  }
+}
+
 function toTransactionRow(transaction: PlaidTransaction, accountId: string | undefined) {
   if (!accountId) return null;
   return {

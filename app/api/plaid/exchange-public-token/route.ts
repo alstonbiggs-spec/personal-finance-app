@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { createClient } from '@/lib/supabase/server';
 import { getPlaidClient } from '@/lib/plaid/client';
-import { syncPlaidItem } from '@/lib/plaid/sync';
+import { hydratePlaidItemAccounts, syncPlaidItem } from '@/lib/plaid/sync';
 
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -18,11 +18,7 @@ export async function POST(request: Request) {
     const institutionName = metadata?.institution?.name ?? 'Connected institution';
     const { error: itemError } = await admin.from('plaid_items').upsert({ item_id: exchanged.data.item_id, access_token: exchanged.data.access_token, institution_name: institutionName }, { onConflict: 'item_id' });
     if (itemError) throw itemError;
-    for (const account of metadata?.accounts ?? []) {
-      const accountType = account.type === 'credit' ? 'credit' : account.type === 'depository' ? 'checking' : 'debit';
-      const { error: accountError } = await admin.from('accounts').upsert({ name: account.name, institution: institutionName, owner: 'joint', account_type: accountType, bucket: 'joint', plaid_account_id: account.id, plaid_item_id: exchanged.data.item_id }, { onConflict: 'plaid_account_id' });
-      if (accountError) throw accountError;
-    }
+    await hydratePlaidItemAccounts(exchanged.data.item_id, institutionName);
     let sync = null;
     try { sync = await syncPlaidItem(exchanged.data.item_id); } catch (syncError) { console.error('Initial Plaid transaction sync failed', syncError); }
     return NextResponse.json({ ok: true, message: `${institutionName} connected.`, sync });
