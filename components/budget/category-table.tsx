@@ -1,78 +1,53 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { createClient } from '@/lib/supabase/client';
 
 type GroupName = 'NEEDS' | 'WANTS' | 'SAVINGS';
-type Category = { id: string; name: string; budget: number; group: GroupName; other?: boolean };
-type Expense = { id: string; merchant: string; amount: number; categoryId: string };
-
-const needs = [
-  ['Rent', 2500], ['Utilities', 100], ['Wifi', 65], ['Phone Bill', 141], ['Groceries', 900],
-  ['Eating Out', 200], ['Gas / Tolls', 400], ['Insurance', 200], ['Misc.', 409], ['Subscribtions', 45],
-  ['Amazon', 12], ['Netflix', 8], ['Car registration', 15], ['Proton Duo', 10], ['Gym', 190],
-  ['massage', 250], ['Chiropractor', 110],
-].map(([name, budget], i) => ({ id: `needs-${i}`, name: name as string, budget: budget as number, group: 'NEEDS' as GroupName }));
-
-const initialCategories: Category[] = [
-  ...needs,
-  { id: 'needs-other', name: 'Other', budget: 0, group: 'NEEDS', other: true },
-  { id: 'wants-dining', name: 'Dining', budget: 800, group: 'WANTS' },
-  { id: 'wants-travel', name: 'Travel', budget: 800, group: 'WANTS' },
-  { id: 'wants-personal', name: 'Personal', budget: 900, group: 'WANTS' },
-  { id: 'wants-other', name: 'Other', budget: 0, group: 'WANTS', other: true },
-  { id: 'savings-emergency', name: 'Emergency fund', budget: 1000, group: 'SAVINGS' },
-  { id: 'savings-investments', name: 'Investments', budget: 1000, group: 'SAVINGS' },
-  { id: 'savings-other', name: 'Other', budget: 0, group: 'SAVINGS', other: true },
-];
-
-const initialExpenses: Expense[] = [
-  { id: 'e1', merchant: 'Rent / Mortgage', amount: 2500, categoryId: 'needs-0' },
-  { id: 'e2', merchant: 'Whole Foods', amount: 180, categoryId: 'needs-4' },
-  { id: 'e3', merchant: 'Uncategorized market', amount: 125, categoryId: 'needs-other' },
-  { id: 'e4', merchant: 'Old insurance charge', amount: 72, categoryId: 'needs-other' },
-  { id: 'e5', merchant: 'Local service', amount: 40, categoryId: 'needs-other' },
-  { id: 'e6', merchant: 'The Local Table', amount: 96.5, categoryId: 'wants-dining' },
-  { id: 'e7', merchant: 'Emergency transfer', amount: 700, categoryId: 'savings-emergency' },
-];
-
+type Category = { id: string; name: string; monthly_budget: number; parent_category: string; sort_order: number };
+type Expense = { id: string; name: string; amount: number; date: string; category_id: string | null };
+const groups: GroupName[] = ['NEEDS', 'WANTS', 'SAVINGS'];
+const dbGroup = (group: GroupName) => group.toLowerCase() === 'savings' ? 'savings' : group.toLowerCase();
 const money = (value: number) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+const seedCategories = [['Rent',2500,'needs'],['Utilities',100,'needs'],['Wifi',65,'needs'],['Phone Bill',141,'needs'],['Groceries',900,'needs'],['Eating Out',200,'needs'],['Gas / Tolls',400,'needs'],['Insurance',200,'needs'],['Misc.',409,'needs'],['Subscribtions',45,'needs'],['Amazon',12,'needs'],['Netflix',8,'needs'],['Car registration',15,'needs'],['Proton Duo',10,'needs'],['Gym',190,'needs'],['massage',250,'needs'],['Chiropractor',110,'needs'],['Other',0,'needs'],['Dining',800,'wants'],['Travel',800,'wants'],['Personal',900,'wants'],['Other',0,'wants'],['Emergency fund',1000,'savings'],['Investments',1000,'savings'],['Other',0,'savings']];
 
 export function CategoryTable() {
-  const [categories, setCategories] = useState(initialCategories);
-  const [expenses, setExpenses] = useState(initialExpenses);
+  const supabase = createClient();
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [expenses, setExpenses] = useState<Expense[]>([]);
   const [open, setOpen] = useState<GroupName[]>(['NEEDS']);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState('');
 
-  const spentByCategory = useMemo(() => expenses.reduce<Record<string, number>>((sum, expense) => { sum[expense.categoryId] = (sum[expense.categoryId] ?? 0) + expense.amount; return sum; }, {}), [expenses]);
-  const groups = (['NEEDS', 'WANTS', 'SAVINGS'] as GroupName[]).map(name => {
-    const rows = categories.filter(category => category.group === name);
-    return { name, rows, spent: rows.reduce((sum, row) => sum + (spentByCategory[row.id] ?? 0), 0), budget: rows.reduce((sum, row) => sum + row.budget, 0) };
-  });
+  async function loadData() {
+    setLoading(true);
+    const [{ data: categoryRows }, { data: expenseRows }] = await Promise.all([
+      supabase.from('categories').select('id,name,monthly_budget,parent_category,sort_order').order('sort_order').order('created_at'),
+      supabase.from('transactions').select('id,name,amount,date,category_id').eq('is_ignored', false).order('date', { ascending: false }),
+    ]);
+    if (!categoryRows || categoryRows.length === 0) {
+      const { data: seeded } = await supabase.from('categories').insert(seedCategories.map(([name, budget, parent_category], index) => ({ name, monthly_budget: budget, parent_category, sort_order: index }))).select('id,name,monthly_budget,parent_category,sort_order');
+      setCategories((seeded ?? []) as Category[]);
+      setExpenses((expenseRows ?? []) as Expense[]);
+    } else {
+      setCategories(categoryRows as Category[]);
+      setExpenses((expenseRows ?? []) as Expense[]);
+    }
+    setLoading(false);
+  }
 
-  const updateCategory = (id: string, patch: Partial<Category>) => setCategories(rows => rows.map(row => row.id === id ? { ...row, ...patch } : row));
-  const addCategory = (group: GroupName) => { const id = `${group.toLowerCase()}-${Date.now()}`; setCategories(rows => [...rows.filter(row => !(row.group === group && row.other)), { id, name: 'New category', budget: 0, group }, ...rows.filter(row => row.group === group && row.other)]); setEditing(id); };
-  const deleteCategory = (category: Category) => { if (category.other) return; setCategories(rows => rows.filter(row => row.id !== category.id)); setExpenses(rows => rows.map(expense => expense.categoryId === category.id ? { ...expense, categoryId: `${category.group.toLowerCase()}-other` } : expense)); };
-  const reassign = (expenseId: string, categoryId: string) => setExpenses(rows => rows.map(expense => expense.id === expenseId ? { ...expense, categoryId } : expense));
-  const toggleGroup = (name: GroupName) => setOpen(value => value.includes(name) ? value.filter(item => item !== name) : [...value, name]);
-
-  return <div className="overflow-hidden border-t hairline">
-    {groups.map(group => <div key={group.name}>
-      <button onClick={() => toggleGroup(group.name)} className="flex w-full items-center justify-between border-b hairline py-5 text-left">
-        <span className="flex items-center gap-3 text-xs font-bold tracking-[.18em]"><span className="text-gold">{open.includes(group.name) ? '−' : '+'}</span>{group.name}</span>
-        <span className="text-sm">{money(group.spent)} <span className="text-ink/35">/ {money(group.budget)}</span></span>
-      </button>
-      {open.includes(group.name) && <div className="border-b hairline">
-        {group.rows.map(category => { const categorySpent = spentByCategory[category.id] ?? 0; const isEditing = editing === category.id; const categoryExpenses = expenses.filter(expense => expense.categoryId === category.id); return <div key={category.id}>
-          <div className="grid grid-cols-[1fr_auto] gap-4 py-3 pl-8 text-left text-sm hover:bg-white/50">
-            <button onClick={() => setExpanded(expanded === category.id ? null : category.id)} className="text-left"><span className="text-gold">{expanded === category.id ? '−' : '+'}</span>&nbsp; {category.name}</button>
-            <div className="flex items-center gap-3"><span>{money(categorySpent)} <span className="text-ink/35">/</span> {isEditing ? <input aria-label={`${category.name} budget`} type="number" value={category.budget} onChange={e => updateCategory(category.id, { budget: Number(e.target.value) })} className="w-20 border-b hairline bg-transparent text-right" /> : money(category.budget)}</span><button onClick={() => setEditing(isEditing ? null : category.id)} className="text-[10px] uppercase tracking-wider text-ink/40">{isEditing ? 'Done' : 'Edit'}</button>{!category.other && <button onClick={() => deleteCategory(category)} className="text-[10px] uppercase tracking-wider text-red-700/60">Delete</button>}</div>
-          </div>
-          {isEditing && <div className="flex gap-2 pb-3 pl-12"><input aria-label={`${category.name} name`} value={category.name} onChange={e => updateCategory(category.id, { name: e.target.value })} className="border-b hairline bg-transparent text-xs" /><span className="text-xs text-ink/40">Budget is editable above</span></div>}
-          {expanded === category.id && <div className="mb-3 ml-12 border-l border-gold/40 pl-4 text-xs text-ink/60"><div className="grid grid-cols-[1fr_90px_140px] border-b hairline py-2 uppercase tracking-wider"><span>Expense</span><span>Amount</span><span>Assign category</span></div>{categoryExpenses.length === 0 ? <p className="py-3">No expenses in this category.</p> : categoryExpenses.map(expense => <div key={expense.id} className="grid grid-cols-[1fr_90px_140px] items-center border-b hairline py-3"><span>{expense.merchant}</span><span>{money(expense.amount)}</span><select value={expense.categoryId} onChange={e => reassign(expense.id, e.target.value)} className="bg-transparent text-xs"><option value={category.id}>{category.name}</option>{categories.filter(row => row.group === group.name && row.id !== category.id).map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select></div>)}</div>}
-        </div> })}
-        <button onClick={() => addCategory(group.name)} className="mb-4 ml-12 text-[10px] uppercase tracking-[.16em] text-gold">+ Add category</button>
-      </div>}
-    </div>)}
-    <p className="mt-4 text-xs text-ink/45">Other is calculated automatically from expenses that have not been assigned to a named category. Reassigning an expense moves the same amount between rows while the main category total stays unchanged.</p>
-  </div>;
+  useEffect(() => { loadData().catch(() => { setStatus('Could not load Supabase data. Check that the migration and login are complete.'); setLoading(false); }); }, []);
+  const spentByCategory = useMemo(() => expenses.reduce<Record<string, number>>((sum, expense) => { sum[expense.category_id ?? 'unassigned'] = (sum[expense.category_id ?? 'unassigned'] ?? 0) + Number(expense.amount); return sum; }, {}), [expenses]);
+  const updateCategory = async (category: Category, patch: Partial<Category>) => { setCategories(rows => rows.map(row => row.id === category.id ? { ...row, ...patch } : row)); const { error } = await supabase.from('categories').update({ name: patch.name ?? category.name, monthly_budget: patch.monthly_budget ?? category.monthly_budget }).eq('id', category.id); if (error) setStatus(error.message); };
+  const addCategory = async (group: GroupName) => { const nextOrder = categories.filter(row => row.parent_category === dbGroup(group)).length; const { data, error } = await supabase.from('categories').insert({ name: 'New category', monthly_budget: 0, parent_category: dbGroup(group), sort_order: nextOrder }).select('id,name,monthly_budget,parent_category,sort_order').single(); if (error || !data) { setStatus(error?.message ?? 'Could not add category'); return; } setCategories(rows => [...rows.filter(row => !(row.parent_category === dbGroup(group) && row.name === 'Other')), data as Category, ...rows.filter(row => row.parent_category === dbGroup(group) && row.name === 'Other')]); setEditing(data.id); };
+  const deleteCategory = async (category: Category) => { if (category.name === 'Other') return; const other = categories.find(row => row.parent_category === category.parent_category && row.name === 'Other'); if (other) await supabase.from('transactions').update({ category_id: other.id }).eq('category_id', category.id); const { error } = await supabase.from('categories').delete().eq('id', category.id); if (error) { setStatus(error.message); return; } setCategories(rows => rows.filter(row => row.id !== category.id)); setExpenses(rows => rows.map(row => row.category_id === category.id ? { ...row, category_id: other?.id ?? null } : row)); };
+  const reassign = async (expense: Expense, category_id: string) => { setExpenses(rows => rows.map(row => row.id === expense.id ? { ...row, category_id } : row)); const { error } = await supabase.from('transactions').update({ category_id, is_manually_edited: true, updated_at: new Date().toISOString() }).eq('id', expense.id); if (error) setStatus(error.message); };
+  const reorder = async (group: GroupName, draggedId: string, targetId: string) => { setDragOverId(null); if (draggedId === targetId) return; const groupRows = categories.filter(row => row.parent_category === dbGroup(group)).sort((a, b) => a.sort_order - b.sort_order); const from = groupRows.findIndex(row => row.id === draggedId); const to = groupRows.findIndex(row => row.id === targetId); if (from < 0 || to < 0) return; const reordered = [...groupRows]; const [moved] = reordered.splice(from, 1); reordered.splice(to, 0, moved); const orderById = new Map(reordered.map((row, index) => [row.id, index])); setCategories(rows => rows.map(row => orderById.has(row.id) ? { ...row, sort_order: orderById.get(row.id)! } : row)); const results = await Promise.all(reordered.map((row, index) => supabase.from('categories').update({ sort_order: index }).eq('id', row.id))); const failed = results.find(result => result.error); if (failed?.error) setStatus(failed.error.message); };
+  if (loading) return <div className="border-t hairline py-10 text-sm text-ink/50">Loading your categories…</div>;
+  return <div className="overflow-hidden border-t hairline">{status && <p className="border-b border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800">{status}</p>}{groups.map(group => { const rows = categories.filter(category => category.parent_category === dbGroup(group)).sort((a, b) => a.sort_order - b.sort_order); const spent = rows.reduce((sum, row) => sum + (spentByCategory[row.id] ?? 0), 0); const budget = rows.reduce((sum, row) => sum + Number(row.monthly_budget), 0); return <div key={group}>
+    <button onClick={() => setOpen(value => value.includes(group) ? value.filter(item => item !== group) : [...value, group])} className="flex w-full items-center justify-between border-b hairline py-5 text-left"><span className="flex items-center gap-3 text-xs font-bold tracking-[.18em]"><span className="text-gold">{open.includes(group) ? '−' : '+'}</span>{group}</span><span className="text-sm">{money(spent)} <span className="text-ink/35">/ {money(budget)}</span></span></button>
+    {open.includes(group) && <div className="border-b hairline">{rows.map(category => { const categoryExpenses = expenses.filter(expense => expense.category_id === category.id); const categorySpent = spentByCategory[category.id] ?? 0; const isEditing = editing === category.id; return <div key={category.id} onDragOver={event => { event.preventDefault(); setDragOverId(category.id); }} onDragLeave={() => setDragOverId(current => current === category.id ? null : current)} onDrop={event => { const draggedId = event.dataTransfer.getData('category-id'); if (draggedId) reorder(group, draggedId, category.id); }}><div className={`h-0.5 transition-all ${dragOverId === category.id ? 'mx-4 bg-gold/70 shadow-[0_0_0_3px_rgba(173,138,80,0.12)]' : 'bg-transparent'}`} /><div draggable={!isEditing} onDragStart={event => { event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('category-id', category.id); }} onDragEnd={() => setDragOverId(null)} className="cursor-grab active:cursor-grabbing"><div className="grid grid-cols-[1fr_auto] gap-4 py-3 pl-8 text-left text-sm hover:bg-white/50"><button onClick={() => setExpanded(expanded === category.id ? null : category.id)} className="text-left"><span className="mr-1 text-ink/35">⋮⋮</span><span className="text-gold">{expanded === category.id ? '−' : '+'}</span>&nbsp; {category.name}</button><div className="flex items-center gap-3"><span>{money(categorySpent)} <span className="text-ink/35">/</span> {isEditing ? <input aria-label={`${category.name} budget`} type="number" value={category.monthly_budget} onChange={e => updateCategory(category, { monthly_budget: Number(e.target.value) })} className="w-20 border-b hairline bg-transparent text-right" /> : money(Number(category.monthly_budget))}</span><button onClick={() => setEditing(isEditing ? null : category.id)} className="text-[10px] uppercase tracking-wider text-ink/40">{isEditing ? 'Done' : 'Edit'}</button>{category.name !== 'Other' && <button onClick={() => deleteCategory(category)} className="text-[10px] uppercase tracking-wider text-red-700/60">Delete</button>}</div></div>{isEditing && <div className="flex gap-2 pb-3 pl-12"><input aria-label={`${category.name} name`} value={category.name} onChange={e => updateCategory(category, { name: e.target.value })} className="border-b hairline bg-transparent text-xs" /><span className="text-xs text-ink/40">Changes save automatically</span></div>}{expanded === category.id && <div className="mb-3 ml-12 border-l border-gold/40 pl-4 text-xs text-ink/60"><div className="grid grid-cols-[1fr_90px_150px] border-b hairline py-2 uppercase tracking-wider"><span>Expense</span><span>Amount</span><span>Assign category</span></div>{categoryExpenses.length === 0 ? <p className="py-3">No expenses in this category.</p> : categoryExpenses.map(expense => <div key={expense.id} className="grid grid-cols-[1fr_90px_150px] items-center border-b hairline py-3"><span>{expense.name}</span><span>{money(Number(expense.amount))}</span><select value={expense.category_id ?? ''} onChange={e => reassign(expense, e.target.value)} className="bg-transparent text-xs">{categories.filter(row => row.parent_category === dbGroup(group)).map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select></div>)}</div>}</div></div>; })}<button onClick={() => addCategory(group)} className="mb-4 ml-12 text-[10px] uppercase tracking-[.16em] text-gold">+ Add category</button><p className="mb-4 ml-12 text-[10px] text-ink/40">Drag the ⋮⋮ handle to reorder categories. The gold line shows the drop position.</p></div>}
+  </div>; })}<p className="mt-4 text-xs text-ink/45">Other is a real Supabase category. Reassigning an expense updates its category_id, so the same amount moves between rows without changing the main category total.</p></div>;
 }
