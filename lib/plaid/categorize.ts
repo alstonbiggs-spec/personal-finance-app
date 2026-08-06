@@ -2,6 +2,8 @@ export type Bucket = 'needs' | 'wants' | 'joint' | 'savings';
 
 const TRANSFER_PATTERN = /\b(transfer|xfer|acct\s?to\s?acct|funds transfer|online transfer|mobile transfer|internal transfer|savings transfer)\b/i;
 const TRANSFER_PLAID_CATEGORIES = new Set(['TRANSFER_IN', 'TRANSFER_OUT']);
+// Credit card statement payments — money is moving to pay off a card, not new spending.
+const CARD_PAYMENT_PATTERN = /(amex|american express|discover|chase|citi(bank)?|capital one|synchrony|wells fargo|bank of america|\bboa\b)\b.*(epayment|e-payment|payment|pymt|pmt)/i;
 
 const GROCERY_PATTERN = /(kroger|walmart|wal-mart|target|publix|safeway|whole foods|trader joe|aldi|\bheb\b|h-e-b|winn-dixie|food lion|giant eagle|wegmans|costco|sam'?s club|sprouts|grocery)/i;
 const GAS_PATTERN = /(shell|chevron|exxon|\bmobil\b|\bbp\b|texaco|conoco|phillips 66|marathon|circle k|quiktrip|racetrac|wawa|sheetz|speedway|valero|sunoco|gas station|\bfuel\b)/i;
@@ -14,7 +16,8 @@ const TRAVEL_PATTERN = /(delta|united airlines|american airlines|southwest|exped
 
 export function isTransfer(name: string, originalDescription: string, plaidPrimaryCategory?: string | null): boolean {
   if (plaidPrimaryCategory && TRANSFER_PLAID_CATEGORIES.has(plaidPrimaryCategory)) return true;
-  return TRANSFER_PATTERN.test(name) || TRANSFER_PATTERN.test(originalDescription);
+  const text = `${name} ${originalDescription}`;
+  return TRANSFER_PATTERN.test(text) || CARD_PAYMENT_PATTERN.test(text);
 }
 
 export function matchSubcategoryName(name: string, originalDescription: string, bucket: Bucket): string | null {
