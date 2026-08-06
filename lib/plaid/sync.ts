@@ -229,7 +229,8 @@ async function recategorizeUntouchedTransactions(admin: ReturnType<typeof create
     .eq('is_manually_edited', false)
     .eq('is_ignored', false)
     .is('category_id', null);
-  if (error || !rows) return;
+  if (error) throw error;
+  if (!rows) return;
 
   const transferIds: string[] = [];
   const idsByCategory = new Map<string, string[]>();
@@ -249,9 +250,13 @@ async function recategorizeUntouchedTransactions(admin: ReturnType<typeof create
     idsByCategory.set(categoryId, ids);
   }
 
-  if (transferIds.length) await admin.from('transactions').update({ is_ignored: true }).in('id', transferIds);
+  if (transferIds.length) {
+    const { error: transferError } = await admin.from('transactions').update({ is_ignored: true }).in('id', transferIds);
+    if (transferError) throw transferError;
+  }
   for (const [categoryId, ids] of Array.from(idsByCategory.entries())) {
-    await admin.from('transactions').update({ category_id: categoryId }).in('id', ids);
+    const { error: categoryError } = await admin.from('transactions').update({ category_id: categoryId }).in('id', ids);
+    if (categoryError) throw categoryError;
   }
 }
 
