@@ -241,7 +241,7 @@ export async function syncAllPlaidItems() {
 async function recategorizeUntouchedTransactions(admin: ReturnType<typeof createAdminClient>, accountIds: string[], categoryLookup: CategoryLookup, rules: RuleEntry[]) {
   const { data: rows, error } = await admin
     .from('transactions')
-    .select('id,name,original_description,account_id,accounts(owner,bucket)')
+    .select('id,name,original_description,account_id,amount,accounts(owner,bucket)')
     .in('account_id', accountIds)
     .eq('is_manually_edited', false)
     .eq('is_ignored', false)
@@ -259,6 +259,10 @@ async function recategorizeUntouchedTransactions(admin: ReturnType<typeof create
       transferIds.push(row.id);
       continue;
     }
+    // Deposits (negative amount, per Plaid's sign convention) are income, not spend —
+    // they're tracked separately as "Total income" and must never land in a needs/
+    // wants/savings subcategory, or that category's total would go negative.
+    if (Number(row.amount) < 0) continue;
     const ruleCategoryId = matchRuleCategoryId(row.name, row.original_description, rules);
     const subcategory = ruleCategoryId ? null : matchSubcategoryName(row.name, row.original_description, accountInfo.bucket as 'needs' | 'wants' | 'joint' | 'savings');
     const categoryId = ruleCategoryId ?? resolveCategoryId(categoryLookup, accountInfo.bucket, subcategory);
@@ -297,8 +301,11 @@ function toTransactionRow(transaction: PlaidTransaction, account: AccountInfo | 
   if (!isNew) return base;
   const plaidPrimaryCategory = (transaction as unknown as { personal_finance_category?: { primary?: string } }).personal_finance_category?.primary ?? null;
   const transfer = isTransfer(name, originalDescription, plaidPrimaryCategory);
-  const ruleCategoryId = transfer ? null : matchRuleCategoryId(name, originalDescription, rules);
-  const subcategory = transfer || ruleCategoryId ? null : matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings');
-  const categoryId = transfer ? null : ruleCategoryId ?? resolveCategoryId(categoryLookup, account.bucket, subcategory);
+  // Deposits (negative amount) are income, not spend — never file them under a
+  // needs/wants/savings subcategory, or that category's total goes negative.
+  const isIncome = Number(transaction.amount) < 0;
+  const ruleCategoryId = transfer || isIncome ? null : matchRuleCategoryId(name, originalDescription, rules);
+  const subcategory = transfer || isIncome || ruleCategoryId ? null : matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings');
+  const categoryId = transfer || isIncome ? null : ruleCategoryId ?? resolveCategoryId(categoryLookup, account.bucket, subcategory);
   return { ...base, category_id: categoryId, is_ignored: transfer };
 }
