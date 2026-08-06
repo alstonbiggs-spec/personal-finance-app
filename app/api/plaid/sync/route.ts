@@ -8,9 +8,11 @@ export async function POST() {
   if (!user) return NextResponse.json({ error: 'You must be signed in.' }, { status: 401 });
   try {
     const results = await syncAllPlaidItems();
-    return NextResponse.json({ ok: true, results });
+    const failures = results.filter((result) => !result.ok);
+    if (failures.length) console.error('Plaid transaction sync had failures', failures);
+    return NextResponse.json({ ok: failures.length === 0, results });
   } catch (error) {
     console.error('Manual Plaid transaction sync failed', error);
-    return NextResponse.json({ error: 'Transactions are not ready to sync yet. Try again shortly.' }, { status: 502 });
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Transaction sync failed.' }, { status: 502 });
   }
 }

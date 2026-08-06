@@ -4,6 +4,16 @@ import { getPlaidClient } from '@/lib/plaid/client';
 
 type PlaidItem = { id: string; item_id: string; access_token: string; sync_cursor: string | null };
 
+const REAUTH_ERROR_CODES = new Set(['ITEM_LOGIN_REQUIRED', 'ITEM_LOCKED', 'ITEM_NOT_SUPPORTED', 'INVALID_ACCESS_TOKEN', 'INVALID_CREDENTIALS']);
+
+function describePlaidError(error: unknown): { code: string | null; message: string } {
+  const data = (error as { response?: { data?: { error_code?: string; error_message?: string; display_message?: string } } })?.response?.data;
+  if (data?.error_code) {
+    return { code: data.error_code, message: data.display_message ?? data.error_message ?? data.error_code };
+  }
+  return { code: null, message: error instanceof Error ? error.message : 'Unknown error.' };
+}
+
 export async function syncPlaidItem(itemId: string) {
   const admin = createAdminClient();
   const { data: item, error: itemError } = await admin
@@ -27,54 +37,65 @@ export async function syncPlaidItem(itemId: string) {
   let modified = 0;
   let removed = 0;
 
-  while (hasMore) {
-    const response = await plaid.transactionsSync({
-      access_token: item.access_token,
-      cursor,
-      count: 500,
-      options: { include_original_description: true },
-    });
-    const result = response.data;
+  try {
+    while (hasMore) {
+      const response = await plaid.transactionsSync({
+        access_token: item.access_token,
+        cursor,
+        count: 500,
+        options: { include_original_description: true },
+      });
+      const result = response.data;
 
-    if (result.added.length || result.modified.length) {
-      const rows = [...result.added, ...result.modified]
-        .map((transaction) => toTransactionRow(transaction, accountIds.get(transaction.account_id)))
-        .filter((row): row is NonNullable<typeof row> => Boolean(row));
-      if (rows.length) {
-        const { error } = await admin.from('transactions').upsert(rows, { onConflict: 'plaid_transaction_id' });
+      if (result.added.length || result.modified.length) {
+        const rows = [...result.added, ...result.modified]
+          .map((transaction) => toTransactionRow(transaction, accountIds.get(transaction.account_id)))
+          .filter((row): row is NonNullable<typeof row> => Boolean(row));
+        if (rows.length) {
+          const { error } = await admin.from('transactions').upsert(rows, { onConflict: 'plaid_transaction_id' });
+          if (error) throw error;
+        }
+        added += result.added.length;
+        modified += result.modified.length;
+      }
+
+      if (result.removed.length) {
+        const { error } = await admin
+          .from('transactions')
+          .delete()
+          .in('plaid_transaction_id', result.removed.map((transaction) => transaction.transaction_id));
+        if (error) throw error;
+        removed += result.removed.length;
+      }
+
+      for (const account of result.accounts) {
+        const databaseAccountId = accountIds.get(account.account_id);
+        if (!databaseAccountId) continue;
+        const { error } = await admin.from('accounts').update({
+          current_balance: account.balances.current,
+          available_balance: account.balances.available,
+          balance_updated_at: new Date().toISOString(),
+        }).eq('id', databaseAccountId);
         if (error) throw error;
       }
-      added += result.added.length;
-      modified += result.modified.length;
-    }
 
-    if (result.removed.length) {
-      const { error } = await admin
-        .from('transactions')
-        .delete()
-        .in('plaid_transaction_id', result.removed.map((transaction) => transaction.transaction_id));
-      if (error) throw error;
-      removed += result.removed.length;
+      cursor = result.next_cursor;
+      hasMore = result.has_more;
     }
-
-    for (const account of result.accounts) {
-      const databaseAccountId = accountIds.get(account.account_id);
-      if (!databaseAccountId) continue;
-      const { error } = await admin.from('accounts').update({
-        current_balance: account.balances.current,
-        available_balance: account.balances.available,
-        balance_updated_at: new Date().toISOString(),
-      }).eq('id', databaseAccountId);
-      if (error) throw error;
-    }
-
-    cursor = result.next_cursor;
-    hasMore = result.has_more;
+  } catch (error) {
+    const { code, message } = describePlaidError(error);
+    await admin.from('plaid_items').update({
+      last_sync_error: message,
+      needs_reauth: code ? REAUTH_ERROR_CODES.has(code) : false,
+    }).eq('item_id', itemId);
+    throw new Error(message);
   }
 
   const { error: cursorError } = await admin.from('plaid_items').update({
     sync_cursor: cursor,
     last_synced_at: new Date().toISOString(),
+    last_sync_error: null,
+    needs_reauth: false,
   }).eq('item_id', itemId);
   if (cursorError) throw cursorError;
 
@@ -122,10 +143,16 @@ export async function recoverOrphanedPlaidItems() {
 
 export async function syncAllPlaidItems() {
   const admin = createAdminClient();
-  const { data: items, error } = await admin.from('plaid_items').select('item_id');
+  const { data: items, error } = await admin.from('plaid_items').select('item_id,institution_name');
   if (error) throw error;
   const results = [];
-  for (const item of items ?? []) results.push({ itemId: item.item_id, result: await syncPlaidItem(item.item_id) });
+  for (const item of items ?? []) {
+    try {
+      results.push({ itemId: item.item_id, institutionName: item.institution_name, ok: true as const, result: await syncPlaidItem(item.item_id) });
+    } catch (itemError) {
+      results.push({ itemId: item.item_id, institutionName: item.institution_name, ok: false as const, error: itemError instanceof Error ? itemError.message : 'Sync failed.' });
+    }
+  }
   return results;
 }
 
