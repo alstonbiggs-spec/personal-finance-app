@@ -11,7 +11,20 @@ function describePlaidError(error: unknown): { code: string | null; message: str
   if (data?.error_code) {
     return { code: data.error_code, message: data.display_message ?? data.error_message ?? data.error_code };
   }
-  return { code: null, message: error instanceof Error ? error.message : 'Unknown error.' };
+  if (error instanceof Error) return { code: null, message: error.message };
+  if (error && typeof error === 'object') {
+    const record = error as { message?: unknown; details?: unknown; hint?: unknown; code?: unknown };
+    if (typeof record.message === 'string' && record.message) {
+      const parts = [record.message, typeof record.details === 'string' ? record.details : null, typeof record.hint === 'string' ? record.hint : null].filter(Boolean);
+      return { code: typeof record.code === 'string' ? record.code : null, message: parts.join(' — ') };
+    }
+    try {
+      return { code: null, message: JSON.stringify(error) };
+    } catch {
+      // fall through
+    }
+  }
+  return { code: null, message: 'Unknown error.' };
 }
 
 export async function syncPlaidItem(itemId: string) {
@@ -150,7 +163,7 @@ export async function syncAllPlaidItems() {
     try {
       results.push({ itemId: item.item_id, institutionName: item.institution_name, ok: true as const, result: await syncPlaidItem(item.item_id) });
     } catch (itemError) {
-      results.push({ itemId: item.item_id, institutionName: item.institution_name, ok: false as const, error: itemError instanceof Error ? itemError.message : 'Sync failed.' });
+      results.push({ itemId: item.item_id, institutionName: item.institution_name, ok: false as const, error: describePlaidError(itemError).message });
     }
   }
   return results;
