@@ -1,8 +1,11 @@
 import type { Transaction as PlaidTransaction } from 'plaid';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getPlaidClient } from '@/lib/plaid/client';
+import { isTransfer, matchSubcategoryName, parentCategoryForBucket } from '@/lib/plaid/categorize';
 
 type PlaidItem = { id: string; item_id: string; access_token: string; sync_cursor: string | null };
+type AccountInfo = { id: string; owner: string; bucket: string };
+type CategoryLookup = Map<string, string>;
 
 const REAUTH_ERROR_CODES = new Set(['ITEM_LOGIN_REQUIRED', 'ITEM_LOCKED', 'ITEM_NOT_SUPPORTED', 'INVALID_ACCESS_TOKEN', 'INVALID_CREDENTIALS']);
 
@@ -27,6 +30,26 @@ function describePlaidError(error: unknown): { code: string | null; message: str
   return { code: null, message: 'Unknown error.' };
 }
 
+function categoryKey(parentCategory: string, name: string) {
+  return `${parentCategory}::${name}`;
+}
+
+async function loadCategoryLookup(admin: ReturnType<typeof createAdminClient>): Promise<CategoryLookup> {
+  const { data } = await admin.from('categories').select('id,name,parent_category');
+  const lookup: CategoryLookup = new Map();
+  for (const category of data ?? []) lookup.set(categoryKey(category.parent_category, category.name), category.id);
+  return lookup;
+}
+
+function resolveCategoryId(lookup: CategoryLookup, bucket: string, subcategoryName: string | null): string | null {
+  const parent = parentCategoryForBucket(bucket);
+  if (subcategoryName) {
+    const specific = lookup.get(categoryKey(parent, subcategoryName));
+    if (specific) return specific;
+  }
+  return lookup.get(categoryKey(parent, 'Other')) ?? null;
+}
+
 export async function syncPlaidItem(itemId: string) {
   const admin = createAdminClient();
   const { data: item, error: itemError } = await admin
@@ -38,10 +61,11 @@ export async function syncPlaidItem(itemId: string) {
 
   const { data: linkedAccounts, error: accountsError } = await admin
     .from('accounts')
-    .select('id,plaid_account_id')
+    .select('id,plaid_account_id,owner,bucket')
     .eq('plaid_item_id', itemId);
   if (accountsError) throw accountsError;
-  const accountIds = new Map((linkedAccounts ?? []).map((account) => [account.plaid_account_id, account.id]));
+  const accountsByPlaidId = new Map((linkedAccounts ?? []).map((account) => [account.plaid_account_id, { id: account.id, owner: account.owner, bucket: account.bucket } as AccountInfo]));
+  const categoryLookup = await loadCategoryLookup(admin);
 
   const plaid = getPlaidClient();
   let cursor = item.sync_cursor ?? '';
@@ -61,11 +85,24 @@ export async function syncPlaidItem(itemId: string) {
       const result = response.data;
 
       if (result.added.length || result.modified.length) {
-        const rows = [...result.added, ...result.modified]
-          .map((transaction) => toTransactionRow(transaction, accountIds.get(transaction.account_id)))
+        // "added" rows are brand new, so it's safe to set an auto-computed category/ignore
+        // flag. "modified" rows may already have a user's manual edits on them (Plaid can
+        // resend a transaction as it moves from pending to posted) — never touch category_id
+        // or is_ignored there, only the fields Plaid actually owns.
+        const newRows = result.added
+          .map((transaction) => toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), categoryLookup, true))
           .filter((row): row is NonNullable<typeof row> => Boolean(row));
-        if (rows.length) {
-          const { error } = await admin.from('transactions').upsert(rows, { onConflict: 'plaid_transaction_id' });
+        const updatedRows = result.modified
+          .map((transaction) => toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), categoryLookup, false))
+          .filter((row): row is NonNullable<typeof row> => Boolean(row));
+        // Kept as two separate requests: PostgREST's bulk upsert requires every row in
+        // one request to share the same set of keys, and these two batches don't.
+        if (newRows.length) {
+          const { error } = await admin.from('transactions').upsert(newRows, { onConflict: 'plaid_transaction_id' });
+          if (error) throw error;
+        }
+        if (updatedRows.length) {
+          const { error } = await admin.from('transactions').upsert(updatedRows, { onConflict: 'plaid_transaction_id' });
           if (error) throw error;
         }
         added += result.added.length;
@@ -82,7 +119,7 @@ export async function syncPlaidItem(itemId: string) {
       }
 
       for (const account of result.accounts) {
-        const databaseAccountId = accountIds.get(account.account_id);
+        const databaseAccountId = accountsByPlaidId.get(account.account_id)?.id;
         if (!databaseAccountId) continue;
         const { error } = await admin.from('accounts').update({
           current_balance: account.balances.current,
@@ -112,7 +149,19 @@ export async function syncPlaidItem(itemId: string) {
   }).eq('item_id', itemId);
   if (cursorError) throw cursorError;
 
+  const accountIds = Array.from(accountsByPlaidId.values()).map((account) => account.id);
+  if (accountIds.length) await recategorizeUntouchedTransactions(admin, accountIds, categoryLookup);
+
   return { added, modified, removed };
+}
+
+function inferOwnerAndBucket(accountName: string): { owner: string; bucket: string } {
+  const name = accountName.toLowerCase();
+  if (name.includes('alston') && name.includes('saving')) return { owner: 'alston', bucket: 'savings' };
+  if (name.includes('alston')) return { owner: 'alston', bucket: 'wants' };
+  if (name.includes('sydney')) return { owner: 'wife', bucket: 'wants' };
+  if (name.includes('joint')) return { owner: 'joint', bucket: 'needs' };
+  return { owner: 'joint', bucket: 'needs' };
 }
 
 export async function hydratePlaidItemAccounts(itemId: string, institutionName = 'Connected institution') {
@@ -122,12 +171,13 @@ export async function hydratePlaidItemAccounts(itemId: string, institutionName =
   const response = await getPlaidClient().accountsGet({ access_token: item.access_token });
   for (const account of response.data.accounts) {
     const accountType = account.type === 'credit' ? 'credit' : account.type === 'depository' ? 'checking' : 'debit';
+    const { owner, bucket } = inferOwnerAndBucket(account.name);
     const { error } = await admin.from('accounts').upsert({
       name: account.name,
       institution: institutionName,
-      owner: 'joint',
+      owner,
       account_type: accountType,
-      bucket: 'joint',
+      bucket,
       plaid_account_id: account.account_id,
       plaid_item_id: itemId,
       current_balance: account.balances.current,
@@ -169,16 +219,62 @@ export async function syncAllPlaidItems() {
   return results;
 }
 
-function toTransactionRow(transaction: PlaidTransaction, accountId: string | undefined) {
-  if (!accountId) return null;
-  return {
-    account_id: accountId,
+// Backfills transactions that were synced before auto-categorization existed, or that
+// slipped through without a subcategory match. Never touches rows a human has edited.
+async function recategorizeUntouchedTransactions(admin: ReturnType<typeof createAdminClient>, accountIds: string[], categoryLookup: CategoryLookup) {
+  const { data: rows, error } = await admin
+    .from('transactions')
+    .select('id,name,original_description,account_id,accounts(owner,bucket)')
+    .in('account_id', accountIds)
+    .eq('is_manually_edited', false)
+    .eq('is_ignored', false)
+    .is('category_id', null);
+  if (error || !rows) return;
+
+  const transferIds: string[] = [];
+  const idsByCategory = new Map<string, string[]>();
+
+  for (const row of rows) {
+    const accountInfo = Array.isArray(row.accounts) ? row.accounts[0] : row.accounts;
+    if (!accountInfo) continue;
+    if (isTransfer(row.name, row.original_description)) {
+      transferIds.push(row.id);
+      continue;
+    }
+    const subcategory = matchSubcategoryName(row.name, row.original_description, accountInfo.bucket as 'needs' | 'wants' | 'joint' | 'savings');
+    const categoryId = resolveCategoryId(categoryLookup, accountInfo.bucket, subcategory);
+    if (!categoryId) continue;
+    const ids = idsByCategory.get(categoryId) ?? [];
+    ids.push(row.id);
+    idsByCategory.set(categoryId, ids);
+  }
+
+  if (transferIds.length) await admin.from('transactions').update({ is_ignored: true }).in('id', transferIds);
+  for (const [categoryId, ids] of Array.from(idsByCategory.entries())) {
+    await admin.from('transactions').update({ category_id: categoryId }).in('id', ids);
+  }
+}
+
+function toTransactionRow(transaction: PlaidTransaction, account: AccountInfo | undefined, categoryLookup: CategoryLookup, isNew: boolean) {
+  if (!account) return null;
+  const name = transaction.merchant_name ?? transaction.name;
+  const originalDescription = transaction.original_description ?? transaction.name;
+  const base = {
+    account_id: account.id,
     date: transaction.date,
-    name: transaction.merchant_name ?? transaction.name,
-    original_description: transaction.original_description ?? transaction.name,
+    name,
+    original_description: originalDescription,
     amount: transaction.amount,
-    owner: 'joint' as const,
+    owner: account.owner as 'alston' | 'wife' | 'joint',
     plaid_transaction_id: transaction.transaction_id,
     pending: transaction.pending,
   };
+  // Only newly-added transactions get an auto-computed category/ignore flag — a
+  // "modified" row may already carry a manual edit that must not be overwritten.
+  if (!isNew) return base;
+  const plaidPrimaryCategory = (transaction as unknown as { personal_finance_category?: { primary?: string } }).personal_finance_category?.primary ?? null;
+  const transfer = isTransfer(name, originalDescription, plaidPrimaryCategory);
+  const subcategory = transfer ? null : matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings');
+  const categoryId = transfer ? null : resolveCategoryId(categoryLookup, account.bucket, subcategory);
+  return { ...base, category_id: categoryId, is_ignored: transfer };
 }
