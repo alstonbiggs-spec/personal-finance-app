@@ -6,6 +6,7 @@ import { isTransfer, matchSubcategoryName, parentCategoryForBucket } from '@/lib
 type PlaidItem = { id: string; item_id: string; access_token: string; sync_cursor: string | null };
 type AccountInfo = { id: string; owner: string; bucket: string };
 type CategoryLookup = Map<string, string>;
+type RuleEntry = { pattern: string; categoryId: string };
 
 const REAUTH_ERROR_CODES = new Set(['ITEM_LOGIN_REQUIRED', 'ITEM_LOCKED', 'ITEM_NOT_SUPPORTED', 'INVALID_ACCESS_TOKEN', 'INVALID_CREDENTIALS']);
 
@@ -50,6 +51,21 @@ function resolveCategoryId(lookup: CategoryLookup, bucket: string, subcategoryNa
   return lookup.get(categoryKey(parent, 'Other')) ?? null;
 }
 
+// Learned merchant → category rules (see lib/rules/remember-category.ts), created whenever
+// a user manually reassigns a transaction. Checked before the generic keyword matcher.
+async function loadRules(admin: ReturnType<typeof createAdminClient>): Promise<RuleEntry[]> {
+  const { data } = await admin.from('rules').select('match_pattern,apply_category_id');
+  return (data ?? []).map((rule) => ({ pattern: rule.match_pattern.toLowerCase(), categoryId: rule.apply_category_id }));
+}
+
+function matchRuleCategoryId(name: string, originalDescription: string, rules: RuleEntry[]): string | null {
+  const text = `${name} ${originalDescription}`.toLowerCase();
+  for (const rule of rules) {
+    if (rule.pattern && text.includes(rule.pattern)) return rule.categoryId;
+  }
+  return null;
+}
+
 export async function syncPlaidItem(itemId: string) {
   const admin = createAdminClient();
   const { data: item, error: itemError } = await admin
@@ -66,6 +82,7 @@ export async function syncPlaidItem(itemId: string) {
   if (accountsError) throw accountsError;
   const accountsByPlaidId = new Map((linkedAccounts ?? []).map((account) => [account.plaid_account_id, { id: account.id, owner: account.owner, bucket: account.bucket } as AccountInfo]));
   const categoryLookup = await loadCategoryLookup(admin);
+  const rules = await loadRules(admin);
 
   const plaid = getPlaidClient();
   let cursor = item.sync_cursor ?? '';
@@ -90,10 +107,10 @@ export async function syncPlaidItem(itemId: string) {
         // resend a transaction as it moves from pending to posted) — never touch category_id
         // or is_ignored there, only the fields Plaid actually owns.
         const newRows = result.added
-          .map((transaction) => toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), categoryLookup, true))
+          .map((transaction) => toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), categoryLookup, rules, true))
           .filter((row): row is NonNullable<typeof row> => Boolean(row));
         const updatedRows = result.modified
-          .map((transaction) => toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), categoryLookup, false))
+          .map((transaction) => toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), categoryLookup, rules, false))
           .filter((row): row is NonNullable<typeof row> => Boolean(row));
         // Kept as two separate requests: PostgREST's bulk upsert requires every row in
         // one request to share the same set of keys, and these two batches don't.
@@ -150,7 +167,7 @@ export async function syncPlaidItem(itemId: string) {
   if (cursorError) throw cursorError;
 
   const accountIds = Array.from(accountsByPlaidId.values()).map((account) => account.id);
-  if (accountIds.length) await recategorizeUntouchedTransactions(admin, accountIds, categoryLookup);
+  if (accountIds.length) await recategorizeUntouchedTransactions(admin, accountIds, categoryLookup, rules);
 
   return { added, modified, removed };
 }
@@ -221,7 +238,7 @@ export async function syncAllPlaidItems() {
 
 // Backfills transactions that were synced before auto-categorization existed, or that
 // slipped through without a subcategory match. Never touches rows a human has edited.
-async function recategorizeUntouchedTransactions(admin: ReturnType<typeof createAdminClient>, accountIds: string[], categoryLookup: CategoryLookup) {
+async function recategorizeUntouchedTransactions(admin: ReturnType<typeof createAdminClient>, accountIds: string[], categoryLookup: CategoryLookup, rules: RuleEntry[]) {
   const { data: rows, error } = await admin
     .from('transactions')
     .select('id,name,original_description,account_id,accounts(owner,bucket)')
@@ -242,8 +259,9 @@ async function recategorizeUntouchedTransactions(admin: ReturnType<typeof create
       transferIds.push(row.id);
       continue;
     }
-    const subcategory = matchSubcategoryName(row.name, row.original_description, accountInfo.bucket as 'needs' | 'wants' | 'joint' | 'savings');
-    const categoryId = resolveCategoryId(categoryLookup, accountInfo.bucket, subcategory);
+    const ruleCategoryId = matchRuleCategoryId(row.name, row.original_description, rules);
+    const subcategory = ruleCategoryId ? null : matchSubcategoryName(row.name, row.original_description, accountInfo.bucket as 'needs' | 'wants' | 'joint' | 'savings');
+    const categoryId = ruleCategoryId ?? resolveCategoryId(categoryLookup, accountInfo.bucket, subcategory);
     if (!categoryId) continue;
     const ids = idsByCategory.get(categoryId) ?? [];
     ids.push(row.id);
@@ -260,7 +278,7 @@ async function recategorizeUntouchedTransactions(admin: ReturnType<typeof create
   }
 }
 
-function toTransactionRow(transaction: PlaidTransaction, account: AccountInfo | undefined, categoryLookup: CategoryLookup, isNew: boolean) {
+function toTransactionRow(transaction: PlaidTransaction, account: AccountInfo | undefined, categoryLookup: CategoryLookup, rules: RuleEntry[], isNew: boolean) {
   if (!account) return null;
   const name = transaction.merchant_name ?? transaction.name;
   const originalDescription = transaction.original_description ?? transaction.name;
@@ -279,7 +297,8 @@ function toTransactionRow(transaction: PlaidTransaction, account: AccountInfo | 
   if (!isNew) return base;
   const plaidPrimaryCategory = (transaction as unknown as { personal_finance_category?: { primary?: string } }).personal_finance_category?.primary ?? null;
   const transfer = isTransfer(name, originalDescription, plaidPrimaryCategory);
-  const subcategory = transfer ? null : matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings');
-  const categoryId = transfer ? null : resolveCategoryId(categoryLookup, account.bucket, subcategory);
+  const ruleCategoryId = transfer ? null : matchRuleCategoryId(name, originalDescription, rules);
+  const subcategory = transfer || ruleCategoryId ? null : matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings');
+  const categoryId = transfer ? null : ruleCategoryId ?? resolveCategoryId(categoryLookup, account.bucket, subcategory);
   return { ...base, category_id: categoryId, is_ignored: transfer };
 }
