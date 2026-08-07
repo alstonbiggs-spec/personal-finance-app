@@ -16,7 +16,6 @@ const NETFLIX_PATTERN = /netflix/i;
 const SUBSCRIPTION_PATTERN = /(spotify|hulu|disney\+|disney plus|apple\.com\/bill|hbo max|paramount\+|youtube premium|audible|proton\s?(mail|vpn|duo)?)/i;
 const GYM_PATTERN = /(planet fitness|la fitness|anytime fitness|24 hour fitness|\bymca\b|lifetime fitness|equinox|orangetheory|crunch fitness|\bgym\b)/i;
 const RESTAURANT_PATTERN = /(mcdonald|starbucks|chipotle|chick-fil-a|wendy|burger king|taco bell|subway|panera|dunkin|pizza|doordash|uber eats|grubhub|postmates)/i;
-const TRAVEL_PATTERN = /(delta|united airlines|american airlines|southwest|expedia|airbnb|marriott|hilton|hotel|\buber\b(?!\s?eats)|\blyft\b)/i;
 
 export function isTransfer(name: string, originalDescription: string, plaidPrimaryCategory?: string | null): boolean {
   if (plaidPrimaryCategory && TRANSFER_PLAID_CATEGORIES.has(plaidPrimaryCategory)) return true;
@@ -24,7 +23,11 @@ export function isTransfer(name: string, originalDescription: string, plaidPrima
   return TRANSFER_PATTERN.test(text) || CARD_PAYMENT_PATTERN.test(text) || SAVINGS_VEHICLE_PATTERN.test(text);
 }
 
-export function matchSubcategoryName(name: string, originalDescription: string, bucket: Bucket): string | null {
+// Wants-bucket accounts are split by whose discretionary spending it is, not by what the
+// money was spent on — every wants transaction belongs to whichever spouse's account it's
+// on, full stop, regardless of merchant.
+export function matchSubcategoryName(name: string, originalDescription: string, bucket: Bucket, owner?: string): string | null {
+  if (bucket === 'wants') return owner === 'alston' ? 'Alston' : owner === 'wife' ? 'Wife' : null;
   const text = `${name} ${originalDescription}`;
   if (GROCERY_PATTERN.test(text)) return 'Groceries';
   if (GAS_PATTERN.test(text)) return 'Gas / Tolls';
@@ -32,8 +35,7 @@ export function matchSubcategoryName(name: string, originalDescription: string, 
   if (NETFLIX_PATTERN.test(text)) return 'Netflix';
   if (SUBSCRIPTION_PATTERN.test(text)) return 'Subscribtions';
   if (GYM_PATTERN.test(text)) return 'Gym';
-  if (TRAVEL_PATTERN.test(text)) return bucket === 'wants' ? 'Travel' : null;
-  if (RESTAURANT_PATTERN.test(text)) return bucket === 'wants' ? 'Dining' : 'Eating Out';
+  if (RESTAURANT_PATTERN.test(text)) return 'Eating Out';
   return null;
 }
 

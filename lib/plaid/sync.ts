@@ -183,9 +183,9 @@ function inferOwnerAndBucket(accountName: string, institutionName: string): { ow
   // of how the account itself is named.
   if (isSavingsVehicleInstitution(institutionName)) return { owner: 'joint', bucket: 'savings' };
   if (name.includes('alston') && name.includes('saving')) return { owner: 'alston', bucket: 'savings' };
-  // Amex Platinum is used for discretionary spend, Amex Gold for household needs —
-  // opposite of the generic joint-account default below.
-  if (name.includes('platinum')) return { owner: 'joint', bucket: 'wants' };
+  // Amex Platinum is Alston's personal discretionary card; Amex Gold is the household
+  // needs card — opposite of the generic joint-account default below.
+  if (name.includes('platinum')) return { owner: 'alston', bucket: 'wants' };
   if (name.includes('gold')) return { owner: 'joint', bucket: 'needs' };
   // Wife's personal Bank of America card — every charge on it is discretionary spend.
   if (name.includes('travel rewards')) return { owner: 'wife', bucket: 'wants' };
@@ -285,7 +285,7 @@ async function recategorizeUntouchedTransactions(admin: ReturnType<typeof create
       ? resolveDepositCategoryId(categoryLookup, depositCategory)
       : (() => {
           const ruleCategoryId = matchRuleCategoryId(row.name, row.original_description, rules);
-          const subcategory = ruleCategoryId ? null : matchSubcategoryName(row.name, row.original_description, accountInfo.bucket as 'needs' | 'wants' | 'joint' | 'savings');
+          const subcategory = ruleCategoryId ? null : matchSubcategoryName(row.name, row.original_description, accountInfo.bucket as 'needs' | 'wants' | 'joint' | 'savings', accountInfo.owner);
           return ruleCategoryId ?? resolveCategoryId(categoryLookup, accountInfo.bucket, subcategory);
         })();
     if (!categoryId) continue;
@@ -337,7 +337,7 @@ function toTransactionRow(transaction: PlaidTransaction, account: AccountInfo | 
   // entered one of the household's accounts.
   const transfer = depositCategory !== 'savings' && isTransfer(name, originalDescription, plaidPrimaryCategory);
   const ruleCategoryId = transfer || isDeposit ? null : matchRuleCategoryId(name, originalDescription, rules);
-  const subcategory = transfer || isDeposit || ruleCategoryId ? null : matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings');
+  const subcategory = transfer || isDeposit || ruleCategoryId ? null : matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings', account.owner);
   const categoryId = transfer
     ? null
     : isDeposit
