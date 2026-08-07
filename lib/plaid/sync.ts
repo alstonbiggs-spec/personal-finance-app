@@ -187,6 +187,8 @@ function inferOwnerAndBucket(accountName: string, institutionName: string): { ow
   // opposite of the generic joint-account default below.
   if (name.includes('platinum')) return { owner: 'joint', bucket: 'wants' };
   if (name.includes('gold')) return { owner: 'joint', bucket: 'needs' };
+  // Wife's personal Bank of America card — every charge on it is discretionary spend.
+  if (name.includes('travel rewards')) return { owner: 'wife', bucket: 'wants' };
   if (name.includes('alston')) return { owner: 'alston', bucket: 'wants' };
   if (name.includes('sydney')) return { owner: 'wife', bucket: 'wants' };
   if (name.includes('joint')) return { owner: 'joint', bucket: 'needs' };
