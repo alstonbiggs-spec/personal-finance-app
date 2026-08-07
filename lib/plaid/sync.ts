@@ -267,13 +267,20 @@ async function recategorizeUntouchedTransactions(admin: ReturnType<typeof create
   for (const row of rows) {
     const accountInfo = Array.isArray(row.accounts) ? row.accounts[0] : row.accounts;
     if (!accountInfo) continue;
-    if (isTransfer(row.name, row.original_description)) {
+    const isDeposit = Number(row.amount) < 0;
+    const depositCategory = isDeposit
+      ? categorizeDeposit({ accountType: accountInfo.account_type, institution: accountInfo.institution, bucket: accountInfo.bucket })
+      : null;
+    // A transfer-shaped deposit landing in a savings account is the "money saved" event
+    // itself, so it's never ignored. Every other transfer-shaped transaction — including
+    // a transfer-shaped deposit landing anywhere else, like an internal sweep into the
+    // joint checking account — stays ignored rather than counted as income.
+    if (depositCategory !== 'savings' && isTransfer(row.name, row.original_description)) {
       transferIds.push(row.id);
       continue;
     }
-    const isDeposit = Number(row.amount) < 0;
     const categoryId = isDeposit
-      ? resolveDepositCategoryId(categoryLookup, categorizeDeposit({ accountType: accountInfo.account_type, institution: accountInfo.institution, bucket: accountInfo.bucket }))
+      ? resolveDepositCategoryId(categoryLookup, depositCategory)
       : (() => {
           const ruleCategoryId = matchRuleCategoryId(row.name, row.original_description, rules);
           const subcategory = ruleCategoryId ? null : matchSubcategoryName(row.name, row.original_description, accountInfo.bucket as 'needs' | 'wants' | 'joint' | 'savings');
@@ -313,16 +320,26 @@ function toTransactionRow(transaction: PlaidTransaction, account: AccountInfo | 
   // "modified" row may already carry a manual edit that must not be overwritten.
   if (!isNew) return base;
   const plaidPrimaryCategory = (transaction as unknown as { personal_finance_category?: { primary?: string } }).personal_finance_category?.primary ?? null;
-  const transfer = isTransfer(name, originalDescription, plaidPrimaryCategory);
   // Deposits (negative amount) are money coming in — either income or a savings
   // contribution, never spend — so they never land in a needs/wants subcategory.
   const isDeposit = Number(transaction.amount) < 0;
+  const depositCategory = isDeposit
+    ? categorizeDeposit({ accountType: account.accountType, institution: account.institution, bucket: account.bucket })
+    : null;
+  // A transfer-shaped deposit landing in a savings account (Ally, Fidelity, or any
+  // account already bucketed as savings) is the "money saved" event itself, so it's
+  // never ignored even though the description reads like a transfer. Every other
+  // transfer/card-payment/brokerage-shaped transaction — including a transfer-shaped
+  // deposit landing anywhere else, like an internal sweep into the joint checking
+  // account — stays ignored, since that money was already counted when it first
+  // entered one of the household's accounts.
+  const transfer = depositCategory !== 'savings' && isTransfer(name, originalDescription, plaidPrimaryCategory);
   const ruleCategoryId = transfer || isDeposit ? null : matchRuleCategoryId(name, originalDescription, rules);
   const subcategory = transfer || isDeposit || ruleCategoryId ? null : matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings');
   const categoryId = transfer
     ? null
     : isDeposit
-      ? resolveDepositCategoryId(categoryLookup, categorizeDeposit({ accountType: account.accountType, institution: account.institution, bucket: account.bucket }))
+      ? resolveDepositCategoryId(categoryLookup, depositCategory)
       : ruleCategoryId ?? resolveCategoryId(categoryLookup, account.bucket, subcategory);
   return { ...base, category_id: categoryId, is_ignored: transfer };
 }

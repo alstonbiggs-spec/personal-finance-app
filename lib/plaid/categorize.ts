@@ -4,12 +4,10 @@ const TRANSFER_PATTERN = /\b(transfer|xfer|acct\s?to\s?acct|funds transfer|onlin
 const TRANSFER_PLAID_CATEGORIES = new Set(['TRANSFER_IN', 'TRANSFER_OUT']);
 // Credit card statement payments — money is moving to pay off a card, not new spending.
 const CARD_PAYMENT_PATTERN = /(amex|american express|discover|chase|citi(bank)?|capital one|synchrony|wells fargo|bank of america|\bboa\b)\b.*(epayment|e-payment|payment|pymt|pmt)/i;
-// Brokerage/investment transfers — money moving into an investment account, not spending.
-const BROKERAGE_PATTERN = /(fidelity|vanguard|charles schwab|\bschwab\b|e\s?\*?\s?trade|robinhood|td ameritrade|merrill( lynch)?|morgan stanley|wealthfront|betterment|acorns)/i;
 // Institutions that represent an actual long-term savings/investment vehicle (brokerage,
 // retirement, HSA, high-yield savings) — as opposed to an everyday checking or savings
 // account. A deposit into one of these is what counts toward "money saved."
-const SAVINGS_VEHICLE_PATTERN = /(fidelity|vanguard|charles schwab|\bschwab\b|e\s?\*?\s?trade|robinhood|td ameritrade|merrill( lynch)?|morgan stanley|wealthfront|betterment|acorns|\bally\b|\bhsa\b|\b401\s?\(?k\)?\b|\bhysa\b|empower|principal)/i;
+const SAVINGS_VEHICLE_PATTERN = /(fidelity|vanguard|charles schwab|\bschwab\b|e\s?\*?\s?trade|robinhood|td ameritrade|merrill( lynch)?|morgan stanley|wealthfront|betterment|acorns|\bally\b|\bhsa\b|\b401\s?\(?k\)?\b|\bhysa\b|\btsp\b|empower|principal)/i;
 
 const GROCERY_PATTERN = /(kroger|walmart|wal-mart|target|publix|safeway|whole foods|trader joe|aldi|\bheb\b|h-e-b|winn-dixie|food lion|giant eagle|wegmans|costco|sam'?s club|sprouts|grocery)/i;
 const GAS_PATTERN = /(shell|chevron|exxon|\bmobil\b|\bbp\b|texaco|conoco|phillips 66|marathon|circle k|quiktrip|racetrac|wawa|sheetz|speedway|valero|sunoco|gas station|\bfuel\b)/i;
@@ -23,7 +21,7 @@ const TRAVEL_PATTERN = /(delta|united airlines|american airlines|southwest|exped
 export function isTransfer(name: string, originalDescription: string, plaidPrimaryCategory?: string | null): boolean {
   if (plaidPrimaryCategory && TRANSFER_PLAID_CATEGORIES.has(plaidPrimaryCategory)) return true;
   const text = `${name} ${originalDescription}`;
-  return TRANSFER_PATTERN.test(text) || CARD_PAYMENT_PATTERN.test(text) || BROKERAGE_PATTERN.test(text);
+  return TRANSFER_PATTERN.test(text) || CARD_PAYMENT_PATTERN.test(text) || SAVINGS_VEHICLE_PATTERN.test(text);
 }
 
 export function matchSubcategoryName(name: string, originalDescription: string, bucket: Bucket): string | null {
@@ -52,8 +50,11 @@ export function isSavingsVehicleInstitution(institution: string): boolean {
 // Deposits (money in) need their own classification, separate from spend: a credit-card
 // credit is a payment/refund artifact (never income), a deposit into a real savings
 // vehicle is money saved, and everything else landing in the household's needs account
-// is treated as income (paychecks). Deposits into a personal wants-bucket checking
-// account (Venmo, Zelle, interest) are left uncategorized, same as today.
+// is treated as income (paychecks). An account merely labeled "savings" at USAA (e.g.
+// ALSTON SAVINGS) is not a real savings vehicle — it's just another internal sub-account,
+// so deposits into it fall through and get ignored like any other internal transfer.
+// Deposits into a personal wants-bucket checking account (Venmo, Zelle, interest) are
+// left uncategorized, same as today.
 export function categorizeDeposit(account: { accountType: string; institution: string; bucket: string }): 'income' | 'savings' | null {
   if (account.accountType === 'credit') return null;
   if (isSavingsVehicleInstitution(account.institution)) return 'savings';
