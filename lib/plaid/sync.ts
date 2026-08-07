@@ -1,10 +1,10 @@
 import type { Transaction as PlaidTransaction } from 'plaid';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { getPlaidClient } from '@/lib/plaid/client';
-import { isTransfer, matchSubcategoryName, parentCategoryForBucket } from '@/lib/plaid/categorize';
+import { categorizeDeposit, isSavingsVehicleInstitution, isTransfer, matchSubcategoryName, parentCategoryForBucket } from '@/lib/plaid/categorize';
 
 type PlaidItem = { id: string; item_id: string; access_token: string; sync_cursor: string | null };
-type AccountInfo = { id: string; owner: string; bucket: string };
+type AccountInfo = { id: string; owner: string; bucket: string; accountType: string; institution: string };
 type CategoryLookup = Map<string, string>;
 type RuleEntry = { pattern: string; categoryId: string };
 
@@ -51,6 +51,11 @@ function resolveCategoryId(lookup: CategoryLookup, bucket: string, subcategoryNa
   return lookup.get(categoryKey(parent, 'Other')) ?? null;
 }
 
+function resolveDepositCategoryId(lookup: CategoryLookup, parent: 'income' | 'savings' | null): string | null {
+  if (!parent) return null;
+  return lookup.get(categoryKey(parent, 'Other')) ?? null;
+}
+
 // Learned merchant → category rules (see lib/rules/remember-category.ts), created whenever
 // a user manually reassigns a transaction. Checked before the generic keyword matcher.
 async function loadRules(admin: ReturnType<typeof createAdminClient>): Promise<RuleEntry[]> {
@@ -77,10 +82,10 @@ export async function syncPlaidItem(itemId: string) {
 
   const { data: linkedAccounts, error: accountsError } = await admin
     .from('accounts')
-    .select('id,plaid_account_id,owner,bucket')
+    .select('id,plaid_account_id,owner,bucket,account_type,institution')
     .eq('plaid_item_id', itemId);
   if (accountsError) throw accountsError;
-  const accountsByPlaidId = new Map((linkedAccounts ?? []).map((account) => [account.plaid_account_id, { id: account.id, owner: account.owner, bucket: account.bucket } as AccountInfo]));
+  const accountsByPlaidId = new Map((linkedAccounts ?? []).map((account) => [account.plaid_account_id, { id: account.id, owner: account.owner, bucket: account.bucket, accountType: account.account_type, institution: account.institution } as AccountInfo]));
   const categoryLookup = await loadCategoryLookup(admin);
   const rules = await loadRules(admin);
 
@@ -172,9 +177,16 @@ export async function syncPlaidItem(itemId: string) {
   return { added, modified, removed };
 }
 
-function inferOwnerAndBucket(accountName: string): { owner: string; bucket: string } {
+function inferOwnerAndBucket(accountName: string, institutionName: string): { owner: string; bucket: string } {
   const name = accountName.toLowerCase();
+  // Brokerage/retirement/HSA/HYSA institutions are always a savings vehicle, regardless
+  // of how the account itself is named.
+  if (isSavingsVehicleInstitution(institutionName)) return { owner: 'joint', bucket: 'savings' };
   if (name.includes('alston') && name.includes('saving')) return { owner: 'alston', bucket: 'savings' };
+  // Amex Platinum is used for discretionary spend, Amex Gold for household needs —
+  // opposite of the generic joint-account default below.
+  if (name.includes('platinum')) return { owner: 'joint', bucket: 'wants' };
+  if (name.includes('gold')) return { owner: 'joint', bucket: 'needs' };
   if (name.includes('alston')) return { owner: 'alston', bucket: 'wants' };
   if (name.includes('sydney')) return { owner: 'wife', bucket: 'wants' };
   if (name.includes('joint')) return { owner: 'joint', bucket: 'needs' };
@@ -188,7 +200,7 @@ export async function hydratePlaidItemAccounts(itemId: string, institutionName =
   const response = await getPlaidClient().accountsGet({ access_token: item.access_token });
   for (const account of response.data.accounts) {
     const accountType = account.type === 'credit' ? 'credit' : account.type === 'depository' ? 'checking' : 'debit';
-    const { owner, bucket } = inferOwnerAndBucket(account.name);
+    const { owner, bucket } = inferOwnerAndBucket(account.name, institutionName);
     const { error } = await admin.from('accounts').upsert({
       name: account.name,
       institution: institutionName,
@@ -241,7 +253,7 @@ export async function syncAllPlaidItems() {
 async function recategorizeUntouchedTransactions(admin: ReturnType<typeof createAdminClient>, accountIds: string[], categoryLookup: CategoryLookup, rules: RuleEntry[]) {
   const { data: rows, error } = await admin
     .from('transactions')
-    .select('id,name,original_description,account_id,amount,accounts(owner,bucket)')
+    .select('id,name,original_description,account_id,amount,accounts(owner,bucket,account_type,institution)')
     .in('account_id', accountIds)
     .eq('is_manually_edited', false)
     .eq('is_ignored', false)
@@ -259,13 +271,14 @@ async function recategorizeUntouchedTransactions(admin: ReturnType<typeof create
       transferIds.push(row.id);
       continue;
     }
-    // Deposits (negative amount, per Plaid's sign convention) are income, not spend —
-    // they're tracked separately as "Total income" and must never land in a needs/
-    // wants/savings subcategory, or that category's total would go negative.
-    if (Number(row.amount) < 0) continue;
-    const ruleCategoryId = matchRuleCategoryId(row.name, row.original_description, rules);
-    const subcategory = ruleCategoryId ? null : matchSubcategoryName(row.name, row.original_description, accountInfo.bucket as 'needs' | 'wants' | 'joint' | 'savings');
-    const categoryId = ruleCategoryId ?? resolveCategoryId(categoryLookup, accountInfo.bucket, subcategory);
+    const isDeposit = Number(row.amount) < 0;
+    const categoryId = isDeposit
+      ? resolveDepositCategoryId(categoryLookup, categorizeDeposit({ accountType: accountInfo.account_type, institution: accountInfo.institution, bucket: accountInfo.bucket }))
+      : (() => {
+          const ruleCategoryId = matchRuleCategoryId(row.name, row.original_description, rules);
+          const subcategory = ruleCategoryId ? null : matchSubcategoryName(row.name, row.original_description, accountInfo.bucket as 'needs' | 'wants' | 'joint' | 'savings');
+          return ruleCategoryId ?? resolveCategoryId(categoryLookup, accountInfo.bucket, subcategory);
+        })();
     if (!categoryId) continue;
     const ids = idsByCategory.get(categoryId) ?? [];
     ids.push(row.id);
@@ -301,11 +314,15 @@ function toTransactionRow(transaction: PlaidTransaction, account: AccountInfo | 
   if (!isNew) return base;
   const plaidPrimaryCategory = (transaction as unknown as { personal_finance_category?: { primary?: string } }).personal_finance_category?.primary ?? null;
   const transfer = isTransfer(name, originalDescription, plaidPrimaryCategory);
-  // Deposits (negative amount) are income, not spend — never file them under a
-  // needs/wants/savings subcategory, or that category's total goes negative.
-  const isIncome = Number(transaction.amount) < 0;
-  const ruleCategoryId = transfer || isIncome ? null : matchRuleCategoryId(name, originalDescription, rules);
-  const subcategory = transfer || isIncome || ruleCategoryId ? null : matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings');
-  const categoryId = transfer || isIncome ? null : ruleCategoryId ?? resolveCategoryId(categoryLookup, account.bucket, subcategory);
+  // Deposits (negative amount) are money coming in — either income or a savings
+  // contribution, never spend — so they never land in a needs/wants subcategory.
+  const isDeposit = Number(transaction.amount) < 0;
+  const ruleCategoryId = transfer || isDeposit ? null : matchRuleCategoryId(name, originalDescription, rules);
+  const subcategory = transfer || isDeposit || ruleCategoryId ? null : matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings');
+  const categoryId = transfer
+    ? null
+    : isDeposit
+      ? resolveDepositCategoryId(categoryLookup, categorizeDeposit({ accountType: account.accountType, institution: account.institution, bucket: account.bucket }))
+      : ruleCategoryId ?? resolveCategoryId(categoryLookup, account.bucket, subcategory);
   return { ...base, category_id: categoryId, is_ignored: transfer };
 }

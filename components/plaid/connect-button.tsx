@@ -1,11 +1,13 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { usePlaidLink, type PlaidLinkOnSuccess } from 'react-plaid-link';
 type Account = { id: string; name: string; institution: string; account_type: string; owner: string; bucket: string; currentBalance: number | null; availableBalance: number | null; lastSyncedAt: string | null; syncError: string | null; needsReauth: boolean };
 type SyncResult = { itemId: string; institutionName: string | null; ok: boolean; error?: string };
 const money = (value: number | null) => value === null ? '—' : `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const statusColor = (account: Account) => account.needsReauth || account.syncError ? 'bg-red-500' : account.lastSyncedAt ? 'bg-forest' : 'bg-ink/30';
 export function ConnectButton() {
+  const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [message, setMessage] = useState('');
@@ -13,7 +15,7 @@ export function ConnectButton() {
   const [syncing, setSyncing] = useState(false);
   async function loadAccounts() { const response = await fetch('/api/plaid/accounts'); if (!response.ok) return; const data = await response.json(); setAccounts(data.accounts ?? []); }
   useEffect(() => { fetch('/api/plaid/create-link-token', { method: 'POST' }).then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error); if (!data.link_token) throw new Error('Plaid did not return a link token.'); setToken(data.link_token); }).catch(error => setMessage(error instanceof Error ? error.message : 'Plaid is not configured.')).finally(() => { setLoading(false); void loadAccounts(); }); }, []);
-  const onSuccess = useCallback<PlaidLinkOnSuccess>(async (public_token, metadata) => { setMessage('Finishing connection…'); try { const response = await fetch('/api/plaid/exchange-public-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ public_token, metadata }) }); const data = await response.json(); setMessage(data.error ?? data.message ?? 'Account connected.'); if (response.ok) await loadAccounts(); } catch { setMessage('The account connection could not be completed.'); } }, []);
+  const onSuccess = useCallback<PlaidLinkOnSuccess>(async (public_token, metadata) => { setMessage('Finishing connection…'); try { const response = await fetch('/api/plaid/exchange-public-token', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ public_token, metadata }) }); const data = await response.json(); setMessage(data.error ?? data.message ?? 'Account connected.'); if (response.ok) { await loadAccounts(); router.refresh(); } } catch { setMessage('The account connection could not be completed.'); } }, [router]);
   async function syncTransactions() {
     setSyncing(true);
     setMessage('Syncing transactions…');
@@ -22,6 +24,9 @@ export function ConnectButton() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
       await loadAccounts();
+      // The household summary bar (income/spent/saved/rate) is server-rendered on the
+      // page and won't otherwise reflect newly-synced transactions until reloaded.
+      router.refresh();
       const failures = (data.results as SyncResult[] | undefined)?.filter((result) => !result.ok) ?? [];
       setMessage(failures.length ? `${failures.map((failure) => `${failure.institutionName ?? 'Account'}: ${failure.error}`).join(' · ')}` : 'Transactions synced.');
     } catch (error) {
