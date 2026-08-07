@@ -9,7 +9,7 @@ export async function GET() {
   const admin = createAdminClient();
   const { data, error } = await admin
     .from('accounts')
-    .select('id,name,institution,account_type,plaid_items(last_synced_at,last_sync_error,needs_reauth)')
+    .select('id,name,institution,account_type,owner,bucket,current_balance,available_balance,plaid_items(last_synced_at,last_sync_error,needs_reauth)')
     .not('plaid_item_id', 'is', null)
     .order('institution')
     .order('name');
@@ -21,6 +21,10 @@ export async function GET() {
       name: account.name,
       institution: account.institution,
       account_type: account.account_type,
+      owner: account.owner,
+      bucket: account.bucket,
+      currentBalance: account.current_balance,
+      availableBalance: account.available_balance,
       lastSyncedAt: status?.last_synced_at ?? null,
       syncError: status?.last_sync_error ?? null,
       needsReauth: status?.needs_reauth ?? false,
