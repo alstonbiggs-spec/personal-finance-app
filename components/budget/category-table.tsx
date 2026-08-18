@@ -24,7 +24,7 @@ export function CategoryTable() {
   const { start, end } = resolvePeriod(searchParams.get('period'));
   const [categories, setCategories] = useState<Category[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [open, setOpen] = useState<GroupName[]>(['NEEDS']);
+  const [open, setOpen] = useState<GroupName[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
