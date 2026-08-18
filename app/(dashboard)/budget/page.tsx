@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { CategoryTable } from '@/components/budget/category-table';
 import { SpendCharts } from '@/components/charts/spend-charts';
+import { SpendPacing } from '@/components/charts/spend-pacing';
 import { SpendSankey } from '@/components/charts/spend-sankey';
 import { FilterBar } from '@/components/ui/filter-bar';
 import { ConnectButton } from '@/components/plaid/connect-button';
@@ -35,14 +36,17 @@ export default async function BudgetPage({ searchParams }: { searchParams: Promi
   const totalSaved = (transactions ?? [])
     .filter((row) => Number(row.amount) < 0 && parentCategoryOf(row) === 'savings')
     .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
-  const savingsRate = totalIncome > 0 ? Math.round((totalSaved / totalIncome) * 100) : null;
   const spendByBucket = (bucket: string) => (transactions ?? [])
     .filter((row) => Number(row.amount) > 0 && parentCategoryOf(row) === bucket)
     .reduce((sum, row) => sum + Number(row.amount), 0);
+  // Savings uses totalSaved (money moved into savings vehicles) rather than
+  // spendByBucket('savings'), since savings transfers post as deposits (negative
+  // amount), not spend — mirroring the sankeyBuckets savings figure below. This
+  // lets the pie chart show a full needs/wants/savings breakdown of total spend + saved.
   const spendBreakdown = [
     { name: 'Needs', value: spendByBucket('needs') },
     { name: 'Wants', value: spendByBucket('wants') },
-    { name: 'Savings', value: spendByBucket('savings') },
+    { name: 'Savings', value: totalSaved },
   ];
   // Subcategory breakdown within each bucket (e.g. Needs → Groceries, Rent, Gas / Tolls…)
   // so clicking a bucket slice can drill the second chart into it. Needs/wants are grouped
@@ -63,7 +67,7 @@ export default async function BudgetPage({ searchParams }: { searchParams: Promi
   const detailByBucket = {
     Needs: subcategoryBreakdown('needs'),
     Wants: subcategoryBreakdown('wants'),
-    Savings: subcategoryBreakdown('savings'),
+    Savings: subcategoryAmounts('savings', 'saved'),
   };
   // Sankey: same spend/saved figures as above, reshaped into a flow from the household
   // total down through each bucket into its subcategories.
@@ -74,5 +78,5 @@ export default async function BudgetPage({ searchParams }: { searchParams: Promi
   ];
   const sankeyTotal = sankeyBuckets.reduce((sum, bucket) => sum + bucket.value, 0);
 
-  return <main className="mx-auto max-w-7xl px-6 py-10 lg:px-10"><div className="mb-10 flex items-end justify-between"><div><p className="label mb-3">Household overview · {label}</p><h1 className="serif text-5xl">Budget</h1></div><ConnectButton /></div><FilterBar /><section className="grid grid-cols-2 gap-8 border-b hairline py-8 md:grid-cols-4"><div><p className="label">Total income</p><p className="serif mt-2 text-3xl text-forest">${totalIncome.toLocaleString()}</p></div><div><p className="label">Total spent</p><p className="serif mt-2 text-3xl">${totalSpent.toLocaleString()}</p></div><div><p className="label">Total saved</p><p className="serif mt-2 text-3xl text-forest">${totalSaved.toLocaleString()}</p></div><div><p className="label">Savings rate</p><p className="serif mt-2 text-3xl text-gold">{savingsRate === null ? '—' : `${savingsRate}%`}</p></div></section><section className="border-b hairline py-10"><div className="mb-6"><p className="label">Money flow</p><h2 className="serif mt-1 text-2xl">{label}</h2></div><SpendSankey total={sankeyTotal} buckets={sankeyBuckets} /></section><div className="mt-10 grid gap-16 lg:grid-cols-[1.2fr_.8fr]"><div><div className="mb-6 flex items-end justify-between"><div><p className="label">Plan vs actual</p><h2 className="serif mt-1 text-2xl">{label}</h2></div><span className="text-xs text-ink/50">Spent / budget</span></div><CategoryTable /></div><SpendCharts top={spendBreakdown} detailByBucket={detailByBucket} total={totalSpent} /></div><div className="mt-12"><Link className="button-quiet inline-block" href="/budget/transactions">View all transactions →</Link></div></main>;
+  return <main className="mx-auto max-w-7xl px-6 py-10 lg:px-10"><div className="mb-10 flex items-end justify-between"><div><p className="label mb-3">Household overview · {label}</p><h1 className="serif text-5xl">Budget</h1></div><ConnectButton /></div><FilterBar /><section className="grid grid-cols-3 items-end gap-8 border-b hairline py-8 text-center"><div><p className="label">Total income</p><p className="serif mt-2 text-3xl text-forest">${totalIncome.toLocaleString()}</p></div><div><p className="label">Total spent</p><p className="serif mt-2 text-5xl">${totalSpent.toLocaleString()}</p></div><div><p className="label">Total saved</p><p className="serif mt-2 text-3xl text-forest">${totalSaved.toLocaleString()}</p></div></section><div className="mt-10 grid gap-16 lg:grid-cols-[1.2fr_.8fr]"><div><div className="mb-6 flex items-end justify-between"><div><p className="label">Plan vs actual</p><h2 className="serif mt-1 text-2xl">{label}</h2></div><span className="text-xs text-ink/50">Spent / budget</span></div><CategoryTable /><SpendPacing /></div><SpendCharts top={spendBreakdown} detailByBucket={detailByBucket} total={totalSpent + totalSaved} /></div><section className="mt-10 border-b hairline py-10"><div className="mb-6"><p className="label">Money flow</p><h2 className="serif mt-1 text-2xl">{label}</h2></div><SpendSankey total={sankeyTotal} buckets={sankeyBuckets} /></section><div className="mt-12"><Link className="button-quiet inline-block" href="/budget/transactions">View all transactions →</Link></div></main>;
 }

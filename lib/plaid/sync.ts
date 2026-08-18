@@ -114,17 +114,44 @@ export async function syncPlaidItem(itemId: string) {
         const newRows = result.added
           .map((transaction) => toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), categoryLookup, rules, true))
           .filter((row): row is NonNullable<typeof row> => Boolean(row));
-        const updatedRows = result.modified
-          .map((transaction) => toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), categoryLookup, rules, false))
-          .filter((row): row is NonNullable<typeof row> => Boolean(row));
-        // Kept as two separate requests: PostgREST's bulk upsert requires every row in
-        // one request to share the same set of keys, and these two batches don't.
+
+        // A manually-edited row may also have a hand-corrected name/amount/date — those
+        // must never be clobbered by Plaid resending the same transaction as "modified",
+        // so look up which modified rows are protected before building their update payload.
+        const modifiedIds = result.modified.map((transaction) => transaction.transaction_id);
+        const editedByPlaidId = new Map<string, boolean>();
+        if (modifiedIds.length) {
+          const { data: existingRows, error: existingError } = await admin
+            .from('transactions')
+            .select('plaid_transaction_id,is_manually_edited')
+            .in('plaid_transaction_id', modifiedIds);
+          if (existingError) throw existingError;
+          for (const row of existingRows ?? []) editedByPlaidId.set(row.plaid_transaction_id, row.is_manually_edited);
+        }
+        const updatedRowsOpen: NonNullable<ReturnType<typeof toTransactionRow>>[] = [];
+        const updatedRowsProtected: Partial<NonNullable<ReturnType<typeof toTransactionRow>>>[] = [];
+        for (const transaction of result.modified) {
+          const row = toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), categoryLookup, rules, false);
+          if (!row) continue;
+          if (editedByPlaidId.get(transaction.transaction_id)) {
+            const { amount: _amount, date: _date, name: _name, ...protectedFields } = row;
+            updatedRowsProtected.push(protectedFields);
+          } else {
+            updatedRowsOpen.push(row);
+          }
+        }
+        // Kept as separate requests: PostgREST's bulk upsert requires every row in one
+        // request to share the same set of keys, and these batches don't.
         if (newRows.length) {
           const { error } = await admin.from('transactions').upsert(newRows, { onConflict: 'plaid_transaction_id' });
           if (error) throw error;
         }
-        if (updatedRows.length) {
-          const { error } = await admin.from('transactions').upsert(updatedRows, { onConflict: 'plaid_transaction_id' });
+        if (updatedRowsOpen.length) {
+          const { error } = await admin.from('transactions').upsert(updatedRowsOpen, { onConflict: 'plaid_transaction_id' });
+          if (error) throw error;
+        }
+        if (updatedRowsProtected.length) {
+          const { error } = await admin.from('transactions').upsert(updatedRowsProtected, { onConflict: 'plaid_transaction_id' });
           if (error) throw error;
         }
         added += result.added.length;

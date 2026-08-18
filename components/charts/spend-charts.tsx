@@ -14,7 +14,7 @@ export function SpendCharts({ top = [], detailByBucket = {}, total = 0 }: { top?
   const detail = detailByBucket[active] ?? [];
   return <div className="space-y-10">
     <div>
-      <div className="mb-3 flex justify-between"><span className="label">Total spend</span><span className="serif text-2xl">${total.toLocaleString()}</span></div>
+      <div className="mb-3 flex justify-between"><span className="label">Total spend + saved</span><span className="serif text-2xl">${total.toLocaleString()}</span></div>
       <div className="h-56"><ResponsiveContainer><PieChart><Pie data={top} dataKey="value" nameKey="name" innerRadius={58} outerRadius={88} paddingAngle={3} style={{ cursor: 'pointer' }} onClick={(entry) => { if (entry.name) setActive(String(entry.name)); }}>{top.map((x,i)=><Cell key={x.name} fill={colorFor(x.name,i)} stroke={active===x.name ? '#18231f' : 'transparent'} strokeWidth={active===x.name ? 2 : 0} />)}</Pie><Tooltip formatter={(v, n) => [`$${Number(v).toLocaleString()} (${percentOf(Number(v), top)}%)`, n]} /></PieChart></ResponsiveContainer></div>
       <div className="flex flex-wrap justify-center gap-x-6 gap-y-2">{top.map((x,i)=><button key={x.name} onClick={() => setActive(x.name)} className={`flex items-center gap-2 text-sm transition-opacity ${active===x.name ? '' : 'opacity-50 hover:opacity-80'}`}><i className="inline-block h-2.5 w-2.5 rounded-full" style={{background:colorFor(x.name,i)}} /><span className="font-semibold">{x.name}</span><span className="text-ink/50">{percentOf(x.value, top)}%</span></button>)}</div>
     </div>
