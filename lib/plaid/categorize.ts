@@ -49,6 +49,21 @@ export function isSavingsVehicleInstitution(institution: string): boolean {
   return SAVINGS_VEHICLE_PATTERN.test(institution);
 }
 
+// True when a transaction's own name/description names a savings/investment institution
+// (e.g. an outgoing ACH transfer to Fidelity from a checking account) — distinct from
+// isSavingsVehicleInstitution, which checks the connected account's institution field.
+export function isSavingsVehicleTransferText(name: string, originalDescription: string): boolean {
+  return SAVINGS_VEHICLE_PATTERN.test(`${name} ${originalDescription}`);
+}
+
+// Loose match used to tell whether an outgoing transfer's destination institution is already
+// connected as a household account (so its own deposit already counts the money saved, and the
+// outgoing leg should stay an ignored internal transfer rather than double-counting).
+export function textMentionsInstitution(text: string, institution: string): boolean {
+  const lowerText = text.toLowerCase();
+  return institution.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length >= 4).some((word) => lowerText.includes(word));
+}
+
 // Deposits (money in) need their own classification, separate from spend: a credit-card
 // credit is a payment/refund artifact (never income), a deposit into a real savings
 // vehicle is money saved, and everything else landing in the household's needs account

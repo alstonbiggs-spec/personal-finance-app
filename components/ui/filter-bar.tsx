@@ -27,7 +27,5 @@ export function FilterBar() {
     <select value={period} onChange={(e) => setPeriod(e.target.value)} className="border hairline bg-transparent px-3 py-2 text-sm">
       {PERIOD_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
     </select>
-    <select className="border hairline bg-transparent px-3 py-2 text-sm"><option>Both</option><option>Alston</option><option>Wife</option></select>
-    <select className="border hairline bg-transparent px-3 py-2 text-sm"><option>All types</option><option>Needs</option><option>Wants</option><option>Savings</option></select>
   </div>;
 }
