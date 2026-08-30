@@ -14,7 +14,7 @@ export function Navigation() {
   }
   return <header className="border-b hairline bg-cream">
     <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5 lg:px-10">
-      <Link href="/budget" className="serif text-xl">Household Office</Link>
+      <Link href="/budget" className="serif text-xl">Simpli Finance</Link>
       <nav className="hidden gap-8 md:flex">{links.map(([href,label]) => <Link key={href} href={href} className={`border-b-2 pb-1 text-xs uppercase tracking-[.16em] transition ${path.startsWith(href) ? 'border-gold text-ink' : 'border-transparent text-ink/45 hover:text-ink'}`}>{label}</Link>)}</nav>
       <button onClick={() => setMenuOpen(value => !value)} aria-label={menuOpen ? 'Close menu' : 'Open menu'} aria-expanded={menuOpen} className="flex h-8 w-8 flex-col items-center justify-center gap-1.5 md:hidden">
         <span className={`block h-px w-5 bg-ink/60 transition ${menuOpen ? 'translate-y-[3.5px] rotate-45' : ''}`} />

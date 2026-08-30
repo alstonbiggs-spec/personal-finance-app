@@ -2,8 +2,8 @@ import type { MetadataRoute } from 'next';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Household Office',
-    short_name: 'Household',
+    name: 'Simpli Finance',
+    short_name: 'Simpli Finance',
     description: 'Private household wealth dashboard',
     start_url: '/',
     display: 'standalone',
