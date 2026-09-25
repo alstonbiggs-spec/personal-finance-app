@@ -1,12 +1,203 @@
 'use client';
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { rememberCategoryForMerchant } from '@/lib/rules/remember-category';
+
 type TransactionAccount = { name: string; institution: string };
 type Transaction = { id: string; date: string; name: string; amount: number; category_id: string | null; is_ignored: boolean; original_amount: number | null; original_date: string | null; original_description: string | null; is_manually_edited: boolean; owner: string; accounts: TransactionAccount | TransactionAccount[] | null };
-type Category = { id: string; name: string };
+type Category = { id: string; name: string; parent_category: string };
+type SortKey = 'date' | 'name' | 'category' | 'amount';
+type Filters = { search: string; categoryId: string; status: 'all' | 'included' | 'ignored'; direction: 'all' | 'out' | 'in'; dateFrom: string; dateTo: string; minAmount: string; maxAmount: string };
+
+const EMPTY_FILTERS: Filters = { search: '', categoryId: 'all', status: 'all', direction: 'all', dateFrom: '', dateTo: '', minAmount: '', maxAmount: '' };
+const PARENT_ORDER = ['needs', 'wants', 'savings', 'income'];
+const SORT_LABELS: Record<SortKey, string> = { date: 'Date', name: 'Merchant', category: 'Category', amount: 'Amount' };
+// PostgREST caps a single response (1,000 rows by default), so load in pages.
+const PAGE_SIZE = 1000;
+const TRANSACTION_COLUMNS = 'id,date,name,amount,category_id,is_ignored,original_amount,original_date,original_description,is_manually_edited,owner,accounts(name,institution)';
+
 // Plaid convention: negative amount = money in (income/deposit). Shown as "+$X" in green;
 // spend is shown as "-$X" in the default color.
 const formatAmount = (amount: number) => { const value = Number(amount); const isIncome = value < 0; return { isIncome, text: `${isIncome ? '+' : '-'}$${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2 })}` }; };
+const formatMoney = (value: number) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const formatDate = (isoDate: string) => { const [year, month, day] = isoDate.split('-').map(Number); return new Date(year, month - 1, day).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }); };
-export default function TransactionsPage() { const supabase=createClient(); const [transactions,setTransactions]=useState<Transaction[]>([]); const [categories,setCategories]=useState<Category[]>([]); const [loading,setLoading]=useState(true); const [status,setStatus]=useState(''); const [expandedId,setExpandedId]=useState<string|null>(null); const loadData=()=>{Promise.all([supabase.from('transactions').select('id,date,name,amount,category_id,is_ignored,original_amount,original_date,original_description,is_manually_edited,owner,accounts(name,institution)').order('date',{ascending:false}),supabase.from('categories').select('id,name').order('name')]).then(([txns,cats])=>{if(txns.error||cats.error)setStatus(txns.error?.message??cats.error?.message??'Could not load data');setTransactions((txns.data??[]) as Transaction[]);setCategories((cats.data??[]) as Category[]);setLoading(false);});}; useEffect(()=>{loadData();},[]); const updateCategory=async(id:string,category_id:string,name:string)=>{setTransactions(rows=>rows.map(row=>row.id===id?{...row,category_id:category_id||null}:row));const {error}=await supabase.from('transactions').update({category_id:category_id||null,is_manually_edited:true,updated_at:new Date().toISOString()}).eq('id',id);if(error){setStatus(error.message);return;} if(category_id){const ruleError=await rememberCategoryForMerchant(supabase,name,category_id); if(ruleError)setStatus(ruleError); else loadData();}}; const toggleIgnore=async(transaction:Transaction)=>{const is_ignored=!transaction.is_ignored;setTransactions(rows=>rows.map(row=>row.id===transaction.id?{...row,is_ignored}:row));const {error}=await supabase.from('transactions').update({is_ignored,updated_at:new Date().toISOString()}).eq('id',transaction.id);if(error)setStatus(error.message);}; const categoryName=(id:string|null)=>categories.find(category=>category.id===id)?.name ?? 'Other / unassigned'; if(loading)return <main className="mx-auto max-w-7xl px-6 py-10 lg:px-10"><p className="text-sm text-ink/50">Loading transactions…</p></main>;return <main className="mx-auto max-w-7xl px-6 py-8 sm:py-10 lg:px-10"><p className="label mb-3">Budget · All saved transactions</p><div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><h1 className="serif text-4xl sm:text-5xl">Transactions</h1><button className="button-quiet self-start sm:self-auto">Export CSV</button></div>{status&&<p className="mt-6 border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800">{status}</p>}<div className="mt-10 hidden overflow-x-auto border-t hairline sm:block"><table className="w-full min-w-[800px] text-left text-sm"><thead><tr className="border-b hairline text-[10px] uppercase tracking-[.16em] text-ink/50"><th className="w-8 py-4 font-normal"></th><th className="font-normal">Date</th><th className="font-normal">Merchant</th><th className="font-normal">Category</th><th className="text-right font-normal">Amount</th><th></th></tr></thead><tbody>{transactions.length===0?<tr><td colSpan={6} className="py-12 text-center text-ink/50">No transactions saved yet.</td></tr>:transactions.map(transaction=>{const {isIncome,text}=formatAmount(transaction.amount);const amountEdited=transaction.original_amount!==null && Number(transaction.original_amount)!==Number(transaction.amount);const dateEdited=transaction.original_date!==null && transaction.original_date!==transaction.date;const account=Array.isArray(transaction.accounts)?transaction.accounts[0]:transaction.accounts;const expanded=expandedId===transaction.id;return <Fragment key={transaction.id}><tr className={`border-b hairline ${transaction.is_ignored?'opacity-40':''} ${expanded?'bg-white/60':''}`}><td className="py-5"><button onClick={()=>setExpandedId(expanded?null:transaction.id)} aria-label={expanded?'Collapse details':'Expand details'} className="text-ink/40 hover:text-gold">{expanded?'−':'+'}</button></td><td className="cursor-pointer text-ink/55" onClick={()=>setExpandedId(expanded?null:transaction.id)}>{transaction.date}{dateEdited && <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-gold align-middle" />}</td><td className="cursor-pointer" onClick={()=>setExpandedId(expanded?null:transaction.id)}>{transaction.name}</td><td><select value={transaction.category_id??''} onChange={e=>updateCategory(transaction.id,e.target.value,transaction.name)} className="bg-transparent py-2"><option value="">Other / unassigned</option>{categories.map(category=><option key={category.id} value={category.id}>{category.name}</option>)}</select></td><td className={`text-right ${isIncome?'text-forest':''}`}>{text}{amountEdited && <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-gold align-middle" />}</td><td className="pl-6 text-right"><button onClick={()=>toggleIgnore(transaction)} className="text-xs uppercase tracking-wider text-ink/45 hover:text-gold">{transaction.is_ignored?'Restore':'Ignore'}</button></td></tr>{expanded && <tr className="border-b hairline bg-white/40"><td colSpan={6} className="px-2 py-6"><div className="grid grid-cols-2 gap-x-10 gap-y-5 text-xs sm:grid-cols-4"><div><p className="label">Date</p><p className="serif mt-1 text-base">{formatDate(transaction.date)}</p>{dateEdited && <p className="mt-1 text-[10px] text-gold">Originally {formatDate(transaction.original_date as string)}</p>}</div><div><p className="label">Amount</p><p className="serif mt-1 text-base">{text}</p>{amountEdited && <p className="mt-1 text-[10px] text-gold">Originally {formatAmount(Number(transaction.original_amount)).text}</p>}</div><div><p className="label">Category</p><p className="mt-1">{categoryName(transaction.category_id)}</p></div><div><p className="label">Owner</p><p className="mt-1 capitalize">{transaction.owner}</p></div><div><p className="label">Account</p><p className="mt-1">{account?`${account.institution} · ${account.name}`:'Unknown'}</p></div><div><p className="label">Original description</p><p className="mt-1 text-ink/60">{transaction.original_description ?? '—'}</p></div><div><p className="label">Status</p><p className="mt-1">{transaction.is_ignored?'Ignored':'Included'}</p></div><div><p className="label">Edited</p><p className="mt-1">{transaction.is_manually_edited?'Yes':'No'}</p></div></div></td></tr>}</Fragment>;})}</tbody></table></div><div className="mt-10 border-t hairline sm:hidden">{transactions.length===0?<p className="py-12 text-center text-sm text-ink/50">No transactions saved yet.</p>:transactions.map(transaction=>{const {isIncome,text}=formatAmount(transaction.amount);const amountEdited=transaction.original_amount!==null && Number(transaction.original_amount)!==Number(transaction.amount);const dateEdited=transaction.original_date!==null && transaction.original_date!==transaction.date;const account=Array.isArray(transaction.accounts)?transaction.accounts[0]:transaction.accounts;const expanded=expandedId===transaction.id;return <div key={transaction.id} className={`border-b hairline py-4 ${transaction.is_ignored?'opacity-40':''}`}><button onClick={()=>setExpandedId(expanded?null:transaction.id)} className="flex w-full items-start justify-between gap-3 text-left"><span><span className="block text-sm">{transaction.name}</span><span className="mt-1 block text-xs text-ink/55">{formatDate(transaction.date)}{dateEdited && <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-gold align-middle" />}</span></span><span className={`whitespace-nowrap text-sm ${isIncome?'text-forest':''}`}>{text}{amountEdited && <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-gold align-middle" />}</span></button><div className="mt-3 flex flex-wrap items-center gap-3"><select value={transaction.category_id??''} onChange={e=>updateCategory(transaction.id,e.target.value,transaction.name)} className="min-w-[140px] flex-1 border hairline bg-transparent px-2 py-1.5 text-xs"><option value="">Other / unassigned</option>{categories.map(category=><option key={category.id} value={category.id}>{category.name}</option>)}</select><button onClick={()=>toggleIgnore(transaction)} className="text-[10px] uppercase tracking-wider text-ink/45">{transaction.is_ignored?'Restore':'Ignore'}</button></div>{expanded && <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-4 border-t hairline pt-4 text-xs"><div><p className="label">Category</p><p className="mt-1">{categoryName(transaction.category_id)}</p></div><div><p className="label">Owner</p><p className="mt-1 capitalize">{transaction.owner}</p></div><div><p className="label">Account</p><p className="mt-1">{account?`${account.institution} · ${account.name}`:'Unknown'}</p></div><div><p className="label">Status</p><p className="mt-1">{transaction.is_ignored?'Ignored':'Included'}</p></div><div className="col-span-2"><p className="label">Original description</p><p className="mt-1 text-ink/60">{transaction.original_description ?? '—'}</p></div>{amountEdited && <div><p className="label">Original amount</p><p className="mt-1 text-gold">{formatAmount(Number(transaction.original_amount)).text}</p></div>}{dateEdited && <div><p className="label">Original date</p><p className="mt-1 text-gold">{formatDate(transaction.original_date as string)}</p></div>}</div>}</div>;})}</div><p className="mt-8 text-xs text-ink/40">Category and Ignore changes save to Supabase immediately.</p></main>; }
+const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
+const accountOf = (transaction: Transaction) => Array.isArray(transaction.accounts) ? transaction.accounts[0] : transaction.accounts;
+const Dot = () => <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-gold align-middle" />;
+
+export default function TransactionsPage() {
+  const supabase = createClient();
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState('');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [sort, setSort] = useState<{ key: SortKey; dir: 'asc' | 'desc' }>({ key: 'date', dir: 'desc' });
+
+  const loadData = async () => {
+    const rows: Transaction[] = [];
+    for (let from = 0; ; from += PAGE_SIZE) {
+      const { data, error } = await supabase.from('transactions').select(TRANSACTION_COLUMNS).order('date', { ascending: false }).order('id').range(from, from + PAGE_SIZE - 1);
+      if (error) { setStatus(error.message); break; }
+      rows.push(...((data ?? []) as Transaction[]));
+      if (!data || data.length < PAGE_SIZE) break;
+    }
+    const { data: categoryRows, error: categoryError } = await supabase.from('categories').select('id,name,parent_category').order('sort_order');
+    if (categoryError) setStatus(categoryError.message);
+    setTransactions(rows);
+    setCategories((categoryRows ?? []) as Category[]);
+    setLoading(false);
+  };
+  useEffect(() => { loadData(); }, []);
+
+  const updateCategory = async (id: string, category_id: string, name: string) => {
+    setTransactions(rows => rows.map(row => row.id === id ? { ...row, category_id: category_id || null } : row));
+    const { error } = await supabase.from('transactions').update({ category_id: category_id || null, is_manually_edited: true, updated_at: new Date().toISOString() }).eq('id', id);
+    if (error) { setStatus(error.message); return; }
+    if (category_id) {
+      const ruleError = await rememberCategoryForMerchant(supabase, name, category_id);
+      if (ruleError) setStatus(ruleError); else loadData();
+    }
+  };
+  const toggleIgnore = async (transaction: Transaction) => {
+    const is_ignored = !transaction.is_ignored;
+    setTransactions(rows => rows.map(row => row.id === transaction.id ? { ...row, is_ignored } : row));
+    const { error } = await supabase.from('transactions').update({ is_ignored, updated_at: new Date().toISOString() }).eq('id', transaction.id);
+    if (error) setStatus(error.message);
+  };
+
+  const categoryById = useMemo(() => new Map(categories.map(category => [category.id, category])), [categories]);
+  // Names repeat across groups ("Other" exists in each), so always say which group.
+  const categoryLabel = (id: string | null) => { const category = id ? categoryById.get(id) : null; return category ? `${capitalize(category.parent_category)} · ${category.name}` : 'Other / unassigned'; };
+  const categoryGroups = useMemo(() => PARENT_ORDER.map(parent => ({ parent, rows: categories.filter(category => category.parent_category === parent) })).filter(group => group.rows.length), [categories]);
+  const categoryOptions = categoryGroups.map(group => <optgroup key={group.parent} label={capitalize(group.parent)}>{group.rows.map(category => <option key={category.id} value={category.id}>{category.name}</option>)}</optgroup>);
+
+  const setFilter = <K extends keyof Filters>(key: K, value: Filters[K]) => setFilters(current => ({ ...current, [key]: value }));
+  const activeFilterCount = (Object.keys(EMPTY_FILTERS) as (keyof Filters)[]).filter(key => filters[key] !== EMPTY_FILTERS[key]).length;
+
+  const visible = useMemo(() => {
+    const search = filters.search.trim().toLowerCase();
+    const min = filters.minAmount === '' ? null : Number(filters.minAmount);
+    const max = filters.maxAmount === '' ? null : Number(filters.maxAmount);
+    const filtered = transactions.filter(transaction => {
+      const amount = Number(transaction.amount);
+      const magnitude = Math.abs(amount);
+      if (search && !`${transaction.name} ${transaction.original_description ?? ''}`.toLowerCase().includes(search)) return false;
+      if (filters.categoryId === 'none' ? transaction.category_id !== null : filters.categoryId !== 'all' && transaction.category_id !== filters.categoryId) return false;
+      if (filters.status === 'included' && transaction.is_ignored) return false;
+      if (filters.status === 'ignored' && !transaction.is_ignored) return false;
+      if (filters.direction === 'out' && amount <= 0) return false;
+      if (filters.direction === 'in' && amount >= 0) return false;
+      if (filters.dateFrom && transaction.date < filters.dateFrom) return false;
+      if (filters.dateTo && transaction.date > filters.dateTo) return false;
+      if (min !== null && !Number.isNaN(min) && magnitude < min) return false;
+      if (max !== null && !Number.isNaN(max) && magnitude > max) return false;
+      return true;
+    });
+    const factor = sort.dir === 'desc' ? -1 : 1;
+    return filtered.sort((a, b) => {
+      if (sort.key === 'amount') return (Math.abs(Number(a.amount)) - Math.abs(Number(b.amount))) * factor;
+      if (sort.key === 'name') return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) * factor;
+      if (sort.key === 'category') {
+        // Unassigned always sorts last, whichever direction.
+        if (!a.category_id || !b.category_id) return (a.category_id ? 0 : 1) - (b.category_id ? 0 : 1);
+        return categoryLabel(a.category_id).localeCompare(categoryLabel(b.category_id)) * factor;
+      }
+      return (a.date.localeCompare(b.date) || a.id.localeCompare(b.id)) * factor;
+    });
+    // categoryLabel only depends on categoryById.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transactions, filters, sort, categoryById]);
+
+  const totals = useMemo(() => visible.filter(row => !row.is_ignored).reduce((sum, row) => { const amount = Number(row.amount); if (amount > 0) sum.out += amount; else sum.in -= amount; return sum; }, { out: 0, in: 0 }), [visible]);
+  const toggleSort = (key: SortKey) => setSort(current => current.key === key ? { key, dir: current.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: key === 'name' || key === 'category' ? 'asc' : 'desc' });
+  const sortArrow = (key: SortKey) => sort.key === key ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : '';
+  const sortHeader = (sortKey: SortKey, className = '') => <th className={`font-normal ${className}`}><button onClick={() => toggleSort(sortKey)} className={`uppercase tracking-[.16em] hover:text-gold ${sort.key === sortKey ? 'text-gold' : ''}`}>{SORT_LABELS[sortKey]}{sortArrow(sortKey)}</button></th>;
+
+  if (loading) return <main className="mx-auto max-w-7xl px-6 py-10 lg:px-10"><p className="text-sm text-ink/50">Loading transactions…</p></main>;
+
+  const inputClass = 'w-full border hairline bg-transparent px-2 py-1.5 text-sm';
+  const emptyMessage = transactions.length === 0 ? 'No transactions saved yet.' : 'No transactions match these filters.';
+
+  return <main className="mx-auto max-w-7xl px-6 py-8 sm:py-10 lg:px-10">
+    <p className="label mb-3">Budget · All saved transactions</p>
+    <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between"><h1 className="serif text-4xl sm:text-5xl">Transactions</h1><button className="button-quiet self-start sm:self-auto">Export CSV</button></div>
+    {status && <p className="mt-6 border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800">{status}</p>}
+
+    <section className="mt-8 border-y hairline py-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <input aria-label="Search merchant" type="search" placeholder="Search merchant or description" value={filters.search} onChange={e => setFilter('search', e.target.value)} className="min-w-0 flex-1 border hairline bg-transparent px-3 py-2 text-sm sm:max-w-sm" />
+        <button onClick={() => setFiltersOpen(open => !open)} className="text-[10px] uppercase tracking-wider text-ink/60 sm:hidden">Filters{activeFilterCount ? ` (${activeFilterCount})` : ''} {filtersOpen ? '−' : '+'}</button>
+        {activeFilterCount > 0 && <button onClick={() => setFilters(EMPTY_FILTERS)} className="text-[10px] uppercase tracking-wider text-gold">Clear</button>}
+      </div>
+      <div className={`${filtersOpen ? 'grid' : 'hidden'} mt-4 grid-cols-2 gap-3 text-xs sm:grid sm:grid-cols-3 lg:grid-cols-6`}>
+        <label className="col-span-2 sm:col-span-1"><span className="label">Category</span><select value={filters.categoryId} onChange={e => setFilter('categoryId', e.target.value)} className={`${inputClass} mt-1`}><option value="all">All categories</option><option value="none">Unassigned</option>{categoryOptions}</select></label>
+        <label><span className="label">Status</span><select value={filters.status} onChange={e => setFilter('status', e.target.value as Filters['status'])} className={`${inputClass} mt-1`}><option value="all">All</option><option value="included">Included</option><option value="ignored">Ignored</option></select></label>
+        <label><span className="label">Direction</span><select value={filters.direction} onChange={e => setFilter('direction', e.target.value as Filters['direction'])} className={`${inputClass} mt-1`}><option value="all">In &amp; out</option><option value="out">Money out</option><option value="in">Money in</option></select></label>
+        <label><span className="label">From</span><input type="date" value={filters.dateFrom} onChange={e => setFilter('dateFrom', e.target.value)} className={`${inputClass} mt-1`} /></label>
+        <label><span className="label">To</span><input type="date" value={filters.dateTo} onChange={e => setFilter('dateTo', e.target.value)} className={`${inputClass} mt-1`} /></label>
+        <div className="col-span-2 sm:col-span-1"><span className="label">Amount</span><div className="mt-1 flex items-center gap-1.5"><input aria-label="Minimum amount" type="number" inputMode="decimal" min="0" step="0.01" placeholder="Min" value={filters.minAmount} onChange={e => setFilter('minAmount', e.target.value)} className={inputClass} /><span className="text-ink/40">–</span><input aria-label="Maximum amount" type="number" inputMode="decimal" min="0" step="0.01" placeholder="Max" value={filters.maxAmount} onChange={e => setFilter('maxAmount', e.target.value)} className={inputClass} /></div></div>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-ink/55">
+        <p>{visible.length === transactions.length ? `${transactions.length} transactions` : `${visible.length} of ${transactions.length} transactions`} · Out <span className="text-ink">{formatMoney(totals.out)}</span> · In <span className="text-forest">{formatMoney(totals.in)}</span>{visible.some(row => row.is_ignored) && <span className="text-ink/40"> (totals exclude ignored)</span>}</p>
+        <div className="flex items-center gap-2 sm:hidden"><select aria-label="Sort by" value={sort.key} onChange={e => setSort(current => ({ ...current, key: e.target.value as SortKey }))} className="border hairline bg-transparent px-2 py-1.5 text-xs">{(Object.keys(SORT_LABELS) as SortKey[]).map(key => <option key={key} value={key}>Sort: {SORT_LABELS[key]}</option>)}</select><button aria-label="Reverse sort direction" onClick={() => setSort(current => ({ ...current, dir: current.dir === 'desc' ? 'asc' : 'desc' }))} className="border hairline px-2.5 py-1.5 text-xs">{sort.dir === 'desc' ? '↓' : '↑'}</button></div>
+      </div>
+    </section>
+
+    <div className="mt-6 hidden overflow-x-auto sm:block"><table className="w-full min-w-[800px] text-left text-sm">
+      <thead><tr className="border-b hairline text-[10px] uppercase tracking-[.16em] text-ink/50"><th className="w-8 py-4 font-normal"></th>{sortHeader('date')}{sortHeader('name')}{sortHeader('category')}{sortHeader('amount', 'text-right')}<th></th></tr></thead>
+      <tbody>{visible.length === 0 ? <tr><td colSpan={6} className="py-12 text-center text-ink/50">{emptyMessage}</td></tr> : visible.map(transaction => {
+        const { isIncome, text } = formatAmount(transaction.amount);
+        const amountEdited = transaction.original_amount !== null && Number(transaction.original_amount) !== Number(transaction.amount);
+        const dateEdited = transaction.original_date !== null && transaction.original_date !== transaction.date;
+        const account = accountOf(transaction);
+        const expanded = expandedId === transaction.id;
+        const toggle = () => setExpandedId(expanded ? null : transaction.id);
+        return <Fragment key={transaction.id}>
+          <tr className={`border-b hairline ${transaction.is_ignored ? 'opacity-40' : ''} ${expanded ? 'bg-white/60' : ''}`}>
+            <td className="py-5"><button onClick={toggle} aria-label={expanded ? 'Collapse details' : 'Expand details'} className="text-ink/40 hover:text-gold">{expanded ? '−' : '+'}</button></td>
+            <td className="cursor-pointer text-ink/55" onClick={toggle}>{transaction.date}{dateEdited && <Dot />}</td>
+            <td className="cursor-pointer" onClick={toggle}>{transaction.name}</td>
+            <td><select value={transaction.category_id ?? ''} onChange={e => updateCategory(transaction.id, e.target.value, transaction.name)} className="bg-transparent py-2"><option value="">Other / unassigned</option>{categoryOptions}</select></td>
+            <td className={`text-right ${isIncome ? 'text-forest' : ''}`}>{text}{amountEdited && <Dot />}</td>
+            <td className="pl-6 text-right"><button onClick={() => toggleIgnore(transaction)} className="text-xs uppercase tracking-wider text-ink/45 hover:text-gold">{transaction.is_ignored ? 'Restore' : 'Ignore'}</button></td>
+          </tr>
+          {expanded && <tr className="border-b hairline bg-white/40"><td colSpan={6} className="px-2 py-6"><div className="grid grid-cols-2 gap-x-10 gap-y-5 text-xs sm:grid-cols-4">
+            <div><p className="label">Date</p><p className="serif mt-1 text-base">{formatDate(transaction.date)}</p>{dateEdited && <p className="mt-1 text-[10px] text-gold">Originally {formatDate(transaction.original_date as string)}</p>}</div>
+            <div><p className="label">Amount</p><p className="serif mt-1 text-base">{text}</p>{amountEdited && <p className="mt-1 text-[10px] text-gold">Originally {formatAmount(Number(transaction.original_amount)).text}</p>}</div>
+            <div><p className="label">Category</p><p className="mt-1">{categoryLabel(transaction.category_id)}</p></div>
+            <div><p className="label">Owner</p><p className="mt-1 capitalize">{transaction.owner}</p></div>
+            <div><p className="label">Account</p><p className="mt-1">{account ? `${account.institution} · ${account.name}` : 'Unknown'}</p></div>
+            <div><p className="label">Original description</p><p className="mt-1 text-ink/60">{transaction.original_description ?? '—'}</p></div>
+            <div><p className="label">Status</p><p className="mt-1">{transaction.is_ignored ? 'Ignored' : 'Included'}</p></div>
+            <div><p className="label">Edited</p><p className="mt-1">{transaction.is_manually_edited ? 'Yes' : 'No'}</p></div>
+          </div></td></tr>}
+        </Fragment>;
+      })}</tbody>
+    </table></div>
+
+    <div className="mt-2 border-t hairline sm:hidden">{visible.length === 0 ? <p className="py-12 text-center text-sm text-ink/50">{emptyMessage}</p> : visible.map(transaction => {
+      const { isIncome, text } = formatAmount(transaction.amount);
+      const amountEdited = transaction.original_amount !== null && Number(transaction.original_amount) !== Number(transaction.amount);
+      const dateEdited = transaction.original_date !== null && transaction.original_date !== transaction.date;
+      const account = accountOf(transaction);
+      const expanded = expandedId === transaction.id;
+      return <div key={transaction.id} className={`border-b hairline py-4 ${transaction.is_ignored ? 'opacity-40' : ''}`}>
+        <button onClick={() => setExpandedId(expanded ? null : transaction.id)} className="flex w-full items-start justify-between gap-3 text-left"><span><span className="block text-sm">{transaction.name}</span><span className="mt-1 block text-xs text-ink/55">{formatDate(transaction.date)}{dateEdited && <Dot />}</span></span><span className={`whitespace-nowrap text-sm ${isIncome ? 'text-forest' : ''}`}>{text}{amountEdited && <Dot />}</span></button>
+        <div className="mt-3 flex flex-wrap items-center gap-3"><select value={transaction.category_id ?? ''} onChange={e => updateCategory(transaction.id, e.target.value, transaction.name)} className="min-w-[140px] flex-1 border hairline bg-transparent px-2 py-1.5 text-xs"><option value="">Other / unassigned</option>{categoryOptions}</select><button onClick={() => toggleIgnore(transaction)} className="text-[10px] uppercase tracking-wider text-ink/45">{transaction.is_ignored ? 'Restore' : 'Ignore'}</button></div>
+        {expanded && <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-4 border-t hairline pt-4 text-xs">
+          <div><p className="label">Category</p><p className="mt-1">{categoryLabel(transaction.category_id)}</p></div>
+          <div><p className="label">Owner</p><p className="mt-1 capitalize">{transaction.owner}</p></div>
+          <div><p className="label">Account</p><p className="mt-1">{account ? `${account.institution} · ${account.name}` : 'Unknown'}</p></div>
+          <div><p className="label">Status</p><p className="mt-1">{transaction.is_ignored ? 'Ignored' : 'Included'}</p></div>
+          <div className="col-span-2"><p className="label">Original description</p><p className="mt-1 text-ink/60">{transaction.original_description ?? '—'}</p></div>
+          {amountEdited && <div><p className="label">Original amount</p><p className="mt-1 text-gold">{formatAmount(Number(transaction.original_amount)).text}</p></div>}
+          {dateEdited && <div><p className="label">Original date</p><p className="mt-1 text-gold">{formatDate(transaction.original_date as string)}</p></div>}
+        </div>}
+      </div>;
+    })}</div>
+    <p className="mt-8 text-xs text-ink/40">Category and Ignore changes save to Supabase immediately.</p>
+  </main>;
+}
