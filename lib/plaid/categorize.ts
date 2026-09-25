@@ -7,7 +7,9 @@ const CARD_PAYMENT_PATTERN = /(amex|american express|discover|chase|citi(bank)?|
 // Institutions that represent an actual long-term savings/investment vehicle (brokerage,
 // retirement, HSA, high-yield savings) — as opposed to an everyday checking or savings
 // account. A deposit into one of these is what counts toward "money saved."
-const SAVINGS_VEHICLE_PATTERN = /(fidelity|vanguard|charles schwab|\bschwab\b|e\s?\*?\s?trade|robinhood|td ameritrade|merrill( lynch)?|morgan stanley|wealthfront|betterment|acorns|\bally\b|\bhsa\b|\b401\s?\(?k\)?\b|\bhysa\b|\btsp\b|empower|principal)/i;
+// "fid bkg svc" is Fidelity's raw ACH descriptor, a fallback for when Plaid doesn't enrich
+// the merchant name to "Fidelity".
+const SAVINGS_VEHICLE_PATTERN = /(fidelity|fid bkg svc|vanguard|charles schwab|\bschwab\b|e\s?\*?\s?trade|robinhood|td ameritrade|merrill( lynch)?|morgan stanley|wealthfront|betterment|acorns|\bally\b|\bhsa\b|\b401\s?\(?k\)?\b|\bhysa\b|\btsp\b|empower|principal)/i;
 
 const GROCERY_PATTERN = /(kroger|walmart|wal-mart|target|publix|safeway|whole foods|trader joe|aldi|\bheb\b|h-e-b|winn-dixie|food lion|giant eagle|wegmans|costco|sam'?s club|sprouts|grocery)/i;
 const GAS_PATTERN = /(shell|chevron|exxon|\bmobil\b|\bbp\b|texaco|conoco|phillips 66|marathon|circle k|quiktrip|racetrac|wawa|sheetz|speedway|valero|sunoco|gas station|\bfuel\b)/i;

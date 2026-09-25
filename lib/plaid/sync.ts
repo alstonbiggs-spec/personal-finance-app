@@ -5,8 +5,13 @@ import { categorizeDeposit, isSavingsVehicleInstitution, isSavingsVehicleTransfe
 
 type PlaidItem = { id: string; item_id: string; access_token: string; sync_cursor: string | null };
 type AccountInfo = { id: string; owner: string; bucket: string; accountType: string; institution: string };
+type AdminClient = ReturnType<typeof createAdminClient>;
 type CategoryLookup = Map<string, string>;
-type RuleEntry = { pattern: string; categoryId: string };
+type RuleEntry = { pattern: string; categoryId: string; parentCategory: string | null };
+type NamedCategory = { id: string; name: string };
+// Everything the categorizer needs from the database, loaded once per sync.
+type ClassifyContext = { categoryLookup: CategoryLookup; savingsCategories: NamedCategory[]; rules: RuleEntry[]; connectedSavingsInstitutions: string[] };
+type Classification = { categoryId: string | null; isIgnored: boolean };
 
 const REAUTH_ERROR_CODES = new Set(['ITEM_LOGIN_REQUIRED', 'ITEM_LOCKED', 'ITEM_NOT_SUPPORTED', 'INVALID_ACCESS_TOKEN', 'INVALID_CREDENTIALS']);
 
@@ -35,11 +40,16 @@ function categoryKey(parentCategory: string, name: string) {
   return `${parentCategory}::${name}`;
 }
 
-async function loadCategoryLookup(admin: ReturnType<typeof createAdminClient>): Promise<CategoryLookup> {
-  const { data } = await admin.from('categories').select('id,name,parent_category');
-  const lookup: CategoryLookup = new Map();
-  for (const category of data ?? []) lookup.set(categoryKey(category.parent_category, category.name), category.id);
-  return lookup;
+async function loadClassifyContext(admin: AdminClient): Promise<ClassifyContext> {
+  const [{ data: categories }, rules, connectedSavingsInstitutions] = await Promise.all([
+    admin.from('categories').select('id,name,parent_category,sort_order').order('sort_order'),
+    loadRules(admin),
+    loadConnectedSavingsInstitutions(admin),
+  ]);
+  const categoryLookup: CategoryLookup = new Map();
+  for (const category of categories ?? []) categoryLookup.set(categoryKey(category.parent_category, category.name), category.id);
+  const savingsCategories = (categories ?? []).filter((category) => category.parent_category === 'savings').map(({ id, name }) => ({ id, name }));
+  return { categoryLookup, savingsCategories, rules, connectedSavingsInstitutions };
 }
 
 function resolveCategoryId(lookup: CategoryLookup, bucket: string, subcategoryName: string | null): string | null {
@@ -51,33 +61,52 @@ function resolveCategoryId(lookup: CategoryLookup, bucket: string, subcategoryNa
   return lookup.get(categoryKey(parent, 'Other')) ?? null;
 }
 
-function resolveDepositCategoryId(lookup: CategoryLookup, parent: 'income' | 'savings' | null): string | null {
-  if (!parent) return null;
-  return lookup.get(categoryKey(parent, 'Other')) ?? null;
+// Savings categories are named by the household (e.g. "HYSA", "INVESTMENTS (Fidelity)")
+// rather than drawn from a fixed list, so pick the one whose name mentions an institution in
+// the transaction text, then "Other", then the first savings category. Returning null would
+// leave the row uncategorized, and an uncategorized deposit never counts toward "saved".
+function resolveSavingsCategoryId(context: ClassifyContext, text: string): string | null {
+  // Raw bank descriptors that don't spell out the institution's name.
+  const expanded = text.replace(/fid bkg svc/gi, 'Fidelity $&');
+  const named = context.savingsCategories.find((category) => textMentionsInstitution(expanded, category.name));
+  if (named) return named.id;
+  return context.categoryLookup.get(categoryKey('savings', 'Other')) ?? context.savingsCategories[0]?.id ?? null;
+}
+
+function resolveDepositCategoryId(context: ClassifyContext, parent: 'income' | 'savings' | null, text: string): string | null {
+  if (parent === 'savings') return resolveSavingsCategoryId(context, text);
+  if (parent === 'income') return context.categoryLookup.get(categoryKey('income', 'Other')) ?? null;
+  return null;
 }
 
 // Learned merchant → category rules (see lib/rules/remember-category.ts), created whenever
 // a user manually reassigns a transaction. Checked before the generic keyword matcher.
-async function loadRules(admin: ReturnType<typeof createAdminClient>): Promise<RuleEntry[]> {
-  const { data } = await admin.from('rules').select('match_pattern,apply_category_id');
-  return (data ?? []).map((rule) => ({ pattern: rule.match_pattern.toLowerCase(), categoryId: rule.apply_category_id }));
+async function loadRules(admin: AdminClient): Promise<RuleEntry[]> {
+  const { data } = await admin.from('rules').select('match_pattern,apply_category_id,categories(parent_category)');
+  return (data ?? []).map((rule) => {
+    const category = (Array.isArray(rule.categories) ? rule.categories[0] : rule.categories) as { parent_category?: string } | null;
+    return { pattern: rule.match_pattern.toLowerCase(), categoryId: rule.apply_category_id, parentCategory: category?.parent_category ?? null };
+  });
 }
 
-function matchRuleCategoryId(name: string, originalDescription: string, rules: RuleEntry[]): string | null {
+function matchRuleCategoryId(name: string, originalDescription: string, rules: RuleEntry[], allowedParents?: string[]): string | null {
   const text = `${name} ${originalDescription}`.toLowerCase();
   for (const rule of rules) {
+    if (allowedParents && !allowedParents.includes(rule.parentCategory ?? '')) continue;
     if (rule.pattern && text.includes(rule.pattern)) return rule.categoryId;
   }
   return null;
 }
 
-// Institutions of the household's own connected savings/investment accounts — an outgoing
-// transfer that names one of these already gets counted via that account's own deposit, so it
-// stays an ignored internal transfer. A transfer naming a savings institution that ISN'T
-// connected (e.g. a Fidelity 401k the household doesn't link over Plaid) is the only record of
-// that money being saved, so it counts as savings in its own right instead of being discarded.
-async function loadConnectedSavingsInstitutions(admin: ReturnType<typeof createAdminClient>): Promise<string[]> {
-  const { data } = await admin.from('accounts').select('institution').eq('bucket', 'savings');
+// Institutions of the household's connected savings accounts whose deposits actually arrive
+// over Plaid Transactions: depository accounts like an Ally HYSA (account_type "checking").
+// An outgoing transfer naming one of these is already counted via that account's own deposit,
+// so it stays an ignored internal transfer. Investment accounts (Fidelity, Vanguard; stored as
+// account_type "debit") are deliberately excluded: Plaid Transactions reports no activity for
+// them, so the outgoing leg from checking is the only record of the money being saved and must
+// count as savings even though the brokerage itself is connected.
+async function loadConnectedSavingsInstitutions(admin: AdminClient): Promise<string[]> {
+  const { data } = await admin.from('accounts').select('institution').eq('bucket', 'savings').eq('account_type', 'checking');
   return (data ?? []).map((row) => row.institution);
 }
 
@@ -85,6 +114,41 @@ function isUnconnectedSavingsVehicleTransfer(name: string, originalDescription: 
   if (isDeposit || !isSavingsVehicleTransferText(name, originalDescription)) return false;
   const text = `${name} ${originalDescription}`;
   return !connectedSavingsInstitutions.some((institution) => textMentionsInstitution(text, institution));
+}
+
+// Single source of truth for auto-categorization, shared by newly synced rows and the
+// backfill of untouched rows.
+function classifyTransaction(transaction: { name: string; originalDescription: string; amount: number; plaidPrimaryCategory?: string | null }, account: Pick<AccountInfo, 'owner' | 'bucket' | 'accountType' | 'institution'>, context: ClassifyContext): Classification {
+  const { name, originalDescription } = transaction;
+  const text = `${name} ${originalDescription}`;
+  // Deposits (negative amount) are money coming in — either income or a savings
+  // contribution, never spend — so they never land in a needs/wants subcategory.
+  const isDeposit = Number(transaction.amount) < 0;
+  const depositCategory = isDeposit ? categorizeDeposit(account) : null;
+  // An outgoing transfer to a savings/investment institution whose deposits Plaid doesn't
+  // report (e.g. an ACH into Fidelity) is the only record of that money being saved.
+  if (isUnconnectedSavingsVehicleTransfer(name, originalDescription, isDeposit, context.connectedSavingsInstitutions)) {
+    return { categoryId: resolveSavingsCategoryId(context, text), isIgnored: false };
+  }
+  // A transfer-shaped deposit landing in a savings account (Ally, or any account already
+  // bucketed as savings) is the "money saved" event itself, so it's never ignored even
+  // though the description reads like a transfer. Every other transfer/card-payment/
+  // brokerage-shaped transaction — including a transfer-shaped deposit landing anywhere
+  // else, like an internal sweep into the joint checking account — stays ignored, since
+  // that money was already counted when it first entered one of the household's accounts.
+  if (depositCategory !== 'savings' && isTransfer(name, originalDescription, transaction.plaidPrimaryCategory)) {
+    return { categoryId: null, isIgnored: true };
+  }
+  if (isDeposit) {
+    // Only income/savings rules apply to money coming in, so a needs rule like "Amazon"
+    // can't pull an Amazon refund into spend.
+    const ruleCategoryId = matchRuleCategoryId(name, originalDescription, context.rules, ['income', 'savings']);
+    return { categoryId: ruleCategoryId ?? resolveDepositCategoryId(context, depositCategory, `${text} ${account.institution}`), isIgnored: false };
+  }
+  const ruleCategoryId = matchRuleCategoryId(name, originalDescription, context.rules);
+  if (ruleCategoryId) return { categoryId: ruleCategoryId, isIgnored: false };
+  const subcategory = matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings', account.owner);
+  return { categoryId: resolveCategoryId(context.categoryLookup, account.bucket, subcategory), isIgnored: false };
 }
 
 export async function syncPlaidItem(itemId: string) {
@@ -102,9 +166,7 @@ export async function syncPlaidItem(itemId: string) {
     .eq('plaid_item_id', itemId);
   if (accountsError) throw accountsError;
   const accountsByPlaidId = new Map((linkedAccounts ?? []).map((account) => [account.plaid_account_id, { id: account.id, owner: account.owner, bucket: account.bucket, accountType: account.account_type, institution: account.institution } as AccountInfo]));
-  const categoryLookup = await loadCategoryLookup(admin);
-  const rules = await loadRules(admin);
-  const connectedSavingsInstitutions = await loadConnectedSavingsInstitutions(admin);
+  const context = await loadClassifyContext(admin);
 
   const plaid = getPlaidClient();
   let cursor = item.sync_cursor ?? '';
@@ -129,7 +191,7 @@ export async function syncPlaidItem(itemId: string) {
         // resend a transaction as it moves from pending to posted) — never touch category_id
         // or is_ignored there, only the fields Plaid actually owns.
         const newRows = result.added
-          .map((transaction) => toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), categoryLookup, rules, true, connectedSavingsInstitutions))
+          .map((transaction) => toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), context, true))
           .filter((row): row is NonNullable<typeof row> => Boolean(row));
 
         // A manually-edited row may also have a hand-corrected name/amount/date — those
@@ -148,7 +210,7 @@ export async function syncPlaidItem(itemId: string) {
         const updatedRowsOpen: NonNullable<ReturnType<typeof toTransactionRow>>[] = [];
         const updatedRowsProtected: Partial<NonNullable<ReturnType<typeof toTransactionRow>>>[] = [];
         for (const transaction of result.modified) {
-          const row = toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), categoryLookup, rules, false, connectedSavingsInstitutions);
+          const row = toTransactionRow(transaction, accountsByPlaidId.get(transaction.account_id), context, false);
           if (!row) continue;
           if (editedByPlaidId.get(transaction.transaction_id)) {
             const { amount: _amount, date: _date, name: _name, ...protectedFields } = row;
@@ -184,17 +246,6 @@ export async function syncPlaidItem(itemId: string) {
         removed += result.removed.length;
       }
 
-      for (const account of result.accounts) {
-        const databaseAccountId = accountsByPlaidId.get(account.account_id)?.id;
-        if (!databaseAccountId) continue;
-        const { error } = await admin.from('accounts').update({
-          current_balance: account.balances.current,
-          available_balance: account.balances.available,
-          balance_updated_at: new Date().toISOString(),
-        }).eq('id', databaseAccountId);
-        if (error) throw error;
-      }
-
       cursor = result.next_cursor;
       hasMore = result.has_more;
     }
@@ -215,8 +266,28 @@ export async function syncPlaidItem(itemId: string) {
   }).eq('item_id', itemId);
   if (cursorError) throw cursorError;
 
+  // Balances come from /accounts/get rather than /transactions/sync: sync only reports
+  // accounts that had transaction activity, so investment accounts (which never do) would
+  // otherwise keep their balance from the day they were linked.
+  try {
+    const { data: balances } = await plaid.accountsGet({ access_token: item.access_token });
+    for (const account of balances.accounts) {
+      const databaseAccountId = accountsByPlaidId.get(account.account_id)?.id;
+      if (!databaseAccountId) continue;
+      const { error } = await admin.from('accounts').update({
+        current_balance: account.balances.current,
+        available_balance: account.balances.available,
+        balance_updated_at: new Date().toISOString(),
+      }).eq('id', databaseAccountId);
+      if (error) throw error;
+    }
+  } catch (balanceError) {
+    // Transactions already synced fine; a stale balance shouldn't fail the whole sync.
+    console.error('Plaid balance refresh failed', { itemId, error: describePlaidError(balanceError).message });
+  }
+
   const accountIds = Array.from(accountsByPlaidId.values()).map((account) => account.id);
-  if (accountIds.length) await recategorizeUntouchedTransactions(admin, accountIds, categoryLookup, rules, connectedSavingsInstitutions);
+  if (accountIds.length) await recategorizeUntouchedTransactions(admin, accountIds, context);
 
   return { added, modified, removed };
 }
@@ -295,8 +366,9 @@ export async function syncAllPlaidItems() {
 }
 
 // Backfills transactions that were synced before auto-categorization existed, or that
-// slipped through without a subcategory match. Never touches rows a human has edited.
-async function recategorizeUntouchedTransactions(admin: ReturnType<typeof createAdminClient>, accountIds: string[], categoryLookup: CategoryLookup, rules: RuleEntry[], connectedSavingsInstitutions: string[]) {
+// slipped through without a category (e.g. a savings deposit synced while no savings
+// category could be resolved). Never touches rows a human has edited.
+async function recategorizeUntouchedTransactions(admin: AdminClient, accountIds: string[], context: ClassifyContext) {
   const { data: rows, error } = await admin
     .from('transactions')
     .select('id,name,original_description,account_id,amount,accounts(owner,bucket,account_type,institution)')
@@ -305,78 +377,58 @@ async function recategorizeUntouchedTransactions(admin: ReturnType<typeof create
     .eq('is_ignored', false)
     .is('category_id', null);
   if (error) throw error;
-  if (!rows) return;
 
   const transferIds: string[] = [];
   const idsByCategory = new Map<string, string[]>();
+  const addToCategory = (categoryId: string, id: string) => idsByCategory.set(categoryId, [...(idsByCategory.get(categoryId) ?? []), id]);
 
-  for (const row of rows) {
+  for (const row of rows ?? []) {
     const accountInfo = Array.isArray(row.accounts) ? row.accounts[0] : row.accounts;
     if (!accountInfo) continue;
-    const isDeposit = Number(row.amount) < 0;
-    const depositCategory = isDeposit
-      ? categorizeDeposit({ accountType: accountInfo.account_type, institution: accountInfo.institution, bucket: accountInfo.bucket })
-      : null;
-    const savingsVehicleOut = isUnconnectedSavingsVehicleTransfer(row.name, row.original_description, isDeposit, connectedSavingsInstitutions);
-    // A transfer-shaped deposit landing in a savings account is the "money saved" event
-    // itself, so it's never ignored. Same for an outgoing transfer to a savings/investment
-    // institution the household hasn't connected over Plaid — that outgoing leg is the only
-    // record of the money being saved. Every other transfer-shaped transaction — including a
-    // transfer-shaped deposit landing anywhere else, like an internal sweep into the joint
-    // checking account — stays ignored rather than counted as income.
-    if (!savingsVehicleOut && depositCategory !== 'savings' && isTransfer(row.name, row.original_description)) {
-      transferIds.push(row.id);
-      continue;
-    }
-    const categoryId = savingsVehicleOut
-      ? resolveDepositCategoryId(categoryLookup, 'savings')
-      : isDeposit
-        ? resolveDepositCategoryId(categoryLookup, depositCategory)
-        : (() => {
-            const ruleCategoryId = matchRuleCategoryId(row.name, row.original_description, rules);
-            const subcategory = ruleCategoryId ? null : matchSubcategoryName(row.name, row.original_description, accountInfo.bucket as 'needs' | 'wants' | 'joint' | 'savings', accountInfo.owner);
-            return ruleCategoryId ?? resolveCategoryId(categoryLookup, accountInfo.bucket, subcategory);
-          })();
-    if (!categoryId) continue;
-    const ids = idsByCategory.get(categoryId) ?? [];
-    ids.push(row.id);
-    idsByCategory.set(categoryId, ids);
+    const { categoryId, isIgnored } = classifyTransaction(
+      { name: row.name, originalDescription: row.original_description, amount: Number(row.amount) },
+      { owner: accountInfo.owner, bucket: accountInfo.bucket, accountType: accountInfo.account_type, institution: accountInfo.institution },
+      context,
+    );
+    if (isIgnored) transferIds.push(row.id);
+    else if (categoryId) addToCategory(categoryId, row.id);
   }
 
   if (transferIds.length) {
     const { error: transferError } = await admin.from('transactions').update({ is_ignored: true }).in('id', transferIds);
     if (transferError) throw transferError;
   }
-  for (const [categoryId, ids] of Array.from(idsByCategory.entries())) {
-    const { error: categoryError } = await admin.from('transactions').update({ category_id: categoryId }).in('id', ids);
-    if (categoryError) throw categoryError;
-  }
 
-  // One-time reclaim: outgoing transfers to an unconnected savings/investment institution
-  // (e.g. Fidelity) that were previously discarded as ignored transfers, before this
-  // distinction existed. Only rows still uncategorized and never hand-edited are touched, so
-  // this is safe to re-run on every sync — once fixed, a row falls out of this query for good.
+  // Reclaim: outgoing transfers to a savings/investment institution with no deposit feed
+  // (e.g. Fidelity) that were previously discarded as ignored internal transfers — including
+  // ones that had picked up a needs/wants category before being ignored. Rows a human has
+  // edited are never touched, and a fixed row stops matching (it's no longer ignored), so
+  // this is safe to run on every sync.
   const { data: ignoredRows, error: ignoredError } = await admin
     .from('transactions')
     .select('id,name,original_description,amount')
     .in('account_id', accountIds)
     .eq('is_manually_edited', false)
-    .eq('is_ignored', true)
-    .is('category_id', null);
+    .eq('is_ignored', true);
   if (ignoredError) throw ignoredError;
-  const reclaimIds = (ignoredRows ?? [])
-    .filter((row) => isUnconnectedSavingsVehicleTransfer(row.name, row.original_description, Number(row.amount) < 0, connectedSavingsInstitutions))
-    .map((row) => row.id);
-  if (reclaimIds.length) {
-    const savingsCategoryId = resolveDepositCategoryId(categoryLookup, 'savings');
-    if (savingsCategoryId) {
-      const { error: reclaimError } = await admin.from('transactions').update({ is_ignored: false, category_id: savingsCategoryId }).in('id', reclaimIds);
-      if (reclaimError) throw reclaimError;
-    }
+  const reclaimIdsByCategory = new Map<string, string[]>();
+  for (const row of ignoredRows ?? []) {
+    if (!isUnconnectedSavingsVehicleTransfer(row.name, row.original_description, Number(row.amount) < 0, context.connectedSavingsInstitutions)) continue;
+    const categoryId = resolveSavingsCategoryId(context, `${row.name} ${row.original_description}`);
+    if (categoryId) reclaimIdsByCategory.set(categoryId, [...(reclaimIdsByCategory.get(categoryId) ?? []), row.id]);
+  }
+  for (const [categoryId, ids] of Array.from(reclaimIdsByCategory.entries())) {
+    const { error: reclaimError } = await admin.from('transactions').update({ is_ignored: false, category_id: categoryId }).in('id', ids);
+    if (reclaimError) throw reclaimError;
+  }
+
+  for (const [categoryId, ids] of Array.from(idsByCategory.entries())) {
+    const { error: categoryError } = await admin.from('transactions').update({ category_id: categoryId }).in('id', ids);
+    if (categoryError) throw categoryError;
   }
 }
 
-function toTransactionRow(transaction: PlaidTransaction, account: AccountInfo | undefined, categoryLookup: CategoryLookup, rules: RuleEntry[], isNew: boolean, connectedSavingsInstitutions: string[]) {
+function toTransactionRow(transaction: PlaidTransaction, account: AccountInfo | undefined, context: ClassifyContext, isNew: boolean) {
   if (!account) return null;
   const name = transaction.merchant_name ?? transaction.name;
   const originalDescription = transaction.original_description ?? transaction.name;
@@ -394,32 +446,6 @@ function toTransactionRow(transaction: PlaidTransaction, account: AccountInfo | 
   // "modified" row may already carry a manual edit that must not be overwritten.
   if (!isNew) return base;
   const plaidPrimaryCategory = (transaction as unknown as { personal_finance_category?: { primary?: string } }).personal_finance_category?.primary ?? null;
-  // Deposits (negative amount) are money coming in — either income or a savings
-  // contribution, never spend — so they never land in a needs/wants subcategory.
-  const isDeposit = Number(transaction.amount) < 0;
-  const depositCategory = isDeposit
-    ? categorizeDeposit({ accountType: account.accountType, institution: account.institution, bucket: account.bucket })
-    : null;
-  // An outgoing transfer that names a savings/investment institution the household hasn't
-  // connected over Plaid (e.g. an ACH into a Fidelity account with no Plaid link) is the only
-  // record of that money being saved, so it counts as savings rather than being discarded.
-  const savingsVehicleOut = isUnconnectedSavingsVehicleTransfer(name, originalDescription, isDeposit, connectedSavingsInstitutions);
-  // A transfer-shaped deposit landing in a savings account (Ally, Fidelity, or any
-  // account already bucketed as savings) is the "money saved" event itself, so it's
-  // never ignored even though the description reads like a transfer. Every other
-  // transfer/card-payment/brokerage-shaped transaction — including a transfer-shaped
-  // deposit landing anywhere else, like an internal sweep into the joint checking
-  // account — stays ignored, since that money was already counted when it first
-  // entered one of the household's accounts.
-  const transfer = !savingsVehicleOut && depositCategory !== 'savings' && isTransfer(name, originalDescription, plaidPrimaryCategory);
-  const ruleCategoryId = transfer || isDeposit || savingsVehicleOut ? null : matchRuleCategoryId(name, originalDescription, rules);
-  const subcategory = transfer || isDeposit || ruleCategoryId || savingsVehicleOut ? null : matchSubcategoryName(name, originalDescription, account.bucket as 'needs' | 'wants' | 'joint' | 'savings', account.owner);
-  const categoryId = savingsVehicleOut
-    ? resolveDepositCategoryId(categoryLookup, 'savings')
-    : transfer
-      ? null
-      : isDeposit
-        ? resolveDepositCategoryId(categoryLookup, depositCategory)
-        : ruleCategoryId ?? resolveCategoryId(categoryLookup, account.bucket, subcategory);
-  return { ...base, category_id: categoryId, is_ignored: transfer };
+  const { categoryId, isIgnored } = classifyTransaction({ name, originalDescription, amount: Number(transaction.amount), plaidPrimaryCategory }, account, context);
+  return { ...base, category_id: categoryId, is_ignored: isIgnored };
 }

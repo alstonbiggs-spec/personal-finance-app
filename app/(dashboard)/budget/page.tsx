@@ -8,9 +8,8 @@ import { ConnectButton } from '@/components/plaid/connect-button';
 import { createClient } from '@/lib/supabase/server';
 import { resolvePeriod } from '@/lib/reporting/period';
 
-export default async function BudgetPage({ searchParams }: { searchParams: Promise<{ period?: string }> }) {
-  const { period } = await searchParams;
-  const { start, end, label } = resolvePeriod(period);
+export default async function BudgetPage({ searchParams }: { searchParams: Promise<{ period?: string; from?: string; to?: string }> }) {
+  const { start, end, label, months } = resolvePeriod(await searchParams);
   const supabase = await createClient();
   const { data: transactions } = await supabase
     .from('transactions')
@@ -25,7 +24,9 @@ export default async function BudgetPage({ searchParams }: { searchParams: Promi
   };
   const parentCategoryOf = (row: { categories: CategoryRef | CategoryRef[] | null }) => categoryOf(row)?.parent_category ?? null;
   // Plaid convention: positive amount = money out (spend), negative amount = money in (deposit).
-  const totalSpent = (transactions ?? []).filter((row) => Number(row.amount) > 0).reduce((sum, row) => sum + Number(row.amount), 0);
+  // Money moved into savings is never spend, even when it is an outflow (e.g. a contribution
+  // to an investment account like Fidelity whose own deposits Plaid does not report).
+  const totalSpent = (transactions ?? []).filter((row) => Number(row.amount) > 0 && parentCategoryOf(row) !== 'savings').reduce((sum, row) => sum + Number(row.amount), 0);
   // Total income and total saved are driven by how each deposit was categorized during
   // sync (see lib/plaid/categorize.ts categorizeDeposit) — a credit-card payment credit
   // categorizes to neither, a deposit into a recognized investment/HYSA account
@@ -33,8 +34,11 @@ export default async function BudgetPage({ searchParams }: { searchParams: Promi
   const totalIncome = (transactions ?? [])
     .filter((row) => Number(row.amount) < 0 && parentCategoryOf(row) === 'income')
     .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
+  // Savings rows come in two shapes: a deposit landing in a savings account (negative, e.g.
+  // Ally) or an outflow to a savings vehicle with no deposit feed (positive, e.g. Fidelity).
+  // Both are money saved, so count the magnitude of either.
   const totalSaved = (transactions ?? [])
-    .filter((row) => Number(row.amount) < 0 && parentCategoryOf(row) === 'savings')
+    .filter((row) => parentCategoryOf(row) === 'savings')
     .reduce((sum, row) => sum + Math.abs(Number(row.amount)), 0);
   const spendByBucket = (bucket: string) => (transactions ?? [])
     .filter((row) => Number(row.amount) > 0 && parentCategoryOf(row) === bucket)
@@ -50,13 +54,13 @@ export default async function BudgetPage({ searchParams }: { searchParams: Promi
   ];
   // Subcategory breakdown within each bucket (e.g. Needs → Groceries, Rent, Gas / Tolls…)
   // so clicking a bucket slice can drill the second chart into it. Needs/wants are grouped
-  // by money spent (positive amount); savings is grouped by money saved (negative amount,
-  // i.e. a deposit into a savings vehicle) — mirroring the totalSaved vs totalSpent split above.
+  // by money spent (positive amount); savings is grouped by money saved (either sign, see
+  // totalSaved above) — mirroring the totalSaved vs totalSpent split above.
   const subcategoryAmounts = (bucket: string, mode: 'spent' | 'saved') => {
     const totals = new Map<string, number>();
     for (const row of transactions ?? []) {
       const amount = Number(row.amount);
-      if (mode === 'spent' ? amount <= 0 : amount >= 0) continue;
+      if (mode === 'spent' ? amount <= 0 : amount === 0) continue;
       const category = categoryOf(row);
       if (!category || category.parent_category !== bucket) continue;
       totals.set(category.name, (totals.get(category.name) ?? 0) + Math.abs(amount));
@@ -78,5 +82,5 @@ export default async function BudgetPage({ searchParams }: { searchParams: Promi
   ];
   const sankeyTotal = sankeyBuckets.reduce((sum, bucket) => sum + bucket.value, 0);
 
-  return <main className="mx-auto max-w-7xl px-6 py-8 sm:py-10 lg:px-10"><div className="mb-8 flex flex-col gap-5 sm:mb-10 sm:flex-row sm:items-end sm:justify-between"><div><p className="label mb-3">Household overview · {label}</p><h1 className="serif text-4xl sm:text-5xl">Budget</h1></div><ConnectButton /></div><section className="grid grid-cols-[1fr_1.3fr_1fr] items-center gap-2 border-b hairline py-8 text-center sm:grid-cols-3 sm:items-end sm:gap-8"><div><p className="label">Total income</p><p className="serif mt-2 text-lg text-forest sm:text-3xl">${totalIncome.toLocaleString()}</p></div><div><p className="label">Total spent</p><p className="serif mt-2 text-2xl sm:text-5xl">${totalSpent.toLocaleString()}</p></div><div><p className="label">Total saved</p><p className="serif mt-2 text-lg text-forest sm:text-3xl">${totalSaved.toLocaleString()}</p></div></section><div className="mt-10 grid gap-10 lg:grid-cols-[1.2fr_.8fr] lg:gap-16"><div><div className="mb-6 flex items-end justify-between"><div><p className="label">Plan vs actual</p><h2 className="serif mt-1 text-2xl">{label}</h2></div><span className="text-xs text-ink/50">Spent / budget</span></div><FilterBar /><CategoryTable /><SpendPacing /></div><SpendCharts top={spendBreakdown} detailByBucket={detailByBucket} total={totalSpent + totalSaved} /></div><section className="mt-10 border-b hairline py-10"><div className="mb-6"><p className="label">Money flow</p><h2 className="serif mt-1 text-2xl">{label}</h2></div><SpendSankey total={sankeyTotal} buckets={sankeyBuckets} /></section><div className="mt-12"><Link className="button-quiet inline-block" href="/budget/transactions">View all transactions →</Link></div></main>;
+  return <main className="mx-auto max-w-7xl px-6 py-8 sm:py-10 lg:px-10"><div className="mb-8 flex flex-col gap-5 sm:mb-10 sm:flex-row sm:items-end sm:justify-between"><div><p className="label mb-3">Household overview · {label}</p><h1 className="serif text-4xl sm:text-5xl">Budget</h1></div><ConnectButton /></div><section className="grid grid-cols-[1fr_1.3fr_1fr] items-center gap-2 border-b hairline py-8 text-center sm:grid-cols-3 sm:items-end sm:gap-8"><div><p className="label">Total income</p><p className="serif mt-2 text-lg text-forest sm:text-3xl">${totalIncome.toLocaleString()}</p></div><div><p className="label">Total spent</p><p className="serif mt-2 text-2xl sm:text-5xl">${totalSpent.toLocaleString()}</p></div><div><p className="label">Total saved</p><p className="serif mt-2 text-lg text-forest sm:text-3xl">${totalSaved.toLocaleString()}</p></div></section><div className="mt-10 grid gap-10 lg:grid-cols-[1.2fr_.8fr] lg:gap-16"><div><div className="mb-6 flex items-end justify-between"><div><p className="label">Plan vs actual</p><h2 className="serif mt-1 text-2xl">{label}</h2></div><span className="text-xs text-ink/50">Spent / budget{months > 1 ? ` (${months} mo)` : ''}</span></div><FilterBar /><CategoryTable /><SpendPacing /></div><SpendCharts top={spendBreakdown} detailByBucket={detailByBucket} total={totalSpent + totalSaved} /></div><section className="mt-10 border-b hairline py-10"><div className="mb-6"><p className="label">Money flow</p><h2 className="serif mt-1 text-2xl">{label}</h2></div><SpendSankey total={sankeyTotal} buckets={sankeyBuckets} /></section><div className="mt-12"><Link className="button-quiet inline-block" href="/budget/transactions">View all transactions →</Link></div></main>;
 }
