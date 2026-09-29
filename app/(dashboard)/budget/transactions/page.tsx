@@ -111,7 +111,11 @@ export default function TransactionsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [transactions, filters, sort, categoryById]);
 
-  const totals = useMemo(() => visible.filter(row => !row.is_ignored).reduce((sum, row) => { const amount = Number(row.amount); if (amount > 0) sum.out += amount; else sum.in -= amount; return sum; }, { out: 0, in: 0 }), [visible]);
+  const ignoredCount = useMemo(() => transactions.filter(row => row.is_ignored).length, [transactions]);
+  const showingIgnored = filters.status === 'ignored';
+  const toggleIgnoredView = () => setFilter('status', showingIgnored ? 'all' : 'ignored');
+  // Totals normally exclude ignored rows; when reviewing ignored rows, total those instead.
+  const totals = useMemo(() => visible.filter(row => showingIgnored || !row.is_ignored).reduce((sum, row) => { const amount = Number(row.amount); if (amount > 0) sum.out += amount; else sum.in -= amount; return sum; }, { out: 0, in: 0 }), [visible, showingIgnored]);
   const toggleSort = (key: SortKey) => setSort(current => current.key === key ? { key, dir: current.dir === 'desc' ? 'asc' : 'desc' } : { key, dir: key === 'name' || key === 'category' ? 'asc' : 'desc' });
   const sortArrow = (key: SortKey) => sort.key === key ? (sort.dir === 'desc' ? ' ↓' : ' ↑') : '';
   const sortHeader = (sortKey: SortKey, className = '') => <th className={`font-normal ${className}`}><button onClick={() => toggleSort(sortKey)} className={`uppercase tracking-[.16em] hover:text-gold ${sort.key === sortKey ? 'text-gold' : ''}`}>{SORT_LABELS[sortKey]}{sortArrow(sortKey)}</button></th>;
@@ -141,7 +145,7 @@ export default function TransactionsPage() {
         <div className="col-span-2 sm:col-span-1"><span className="label">Amount</span><div className="mt-1 flex items-center gap-1.5"><input aria-label="Minimum amount" type="number" inputMode="decimal" min="0" step="0.01" placeholder="Min" value={filters.minAmount} onChange={e => setFilter('minAmount', e.target.value)} className={inputClass} /><span className="text-ink/40">–</span><input aria-label="Maximum amount" type="number" inputMode="decimal" min="0" step="0.01" placeholder="Max" value={filters.maxAmount} onChange={e => setFilter('maxAmount', e.target.value)} className={inputClass} /></div></div>
       </div>
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3 text-xs text-ink/55">
-        <p>{visible.length === transactions.length ? `${transactions.length} transactions` : `${visible.length} of ${transactions.length} transactions`} · Out <span className="text-ink">{formatMoney(totals.out)}</span> · In <span className="text-forest">{formatMoney(totals.in)}</span>{visible.some(row => row.is_ignored) && <span className="text-ink/40"> (totals exclude ignored)</span>}</p>
+        <p>{visible.length === transactions.length ? `${transactions.length} transactions` : `${visible.length} of ${transactions.length} transactions`} · Out <span className="text-ink">{formatMoney(totals.out)}</span> · In <span className="text-forest">{formatMoney(totals.in)}</span>{showingIgnored ? <span className="text-ink/40"> (ignored only)</span> : visible.some(row => row.is_ignored) && <span className="text-ink/40"> (totals exclude ignored)</span>}{ignoredCount > 0 && <> · <button onClick={toggleIgnoredView} className={`uppercase tracking-wider hover:text-gold ${showingIgnored ? 'text-gold' : ''}`}>{showingIgnored ? 'Show all' : `Review ${ignoredCount} ignored`}</button></>}</p>
         <div className="flex items-center gap-2 sm:hidden"><select aria-label="Sort by" value={sort.key} onChange={e => setSort(current => ({ ...current, key: e.target.value as SortKey }))} className="border hairline bg-transparent px-2 py-1.5 text-xs">{(Object.keys(SORT_LABELS) as SortKey[]).map(key => <option key={key} value={key}>Sort: {SORT_LABELS[key]}</option>)}</select><button aria-label="Reverse sort direction" onClick={() => setSort(current => ({ ...current, dir: current.dir === 'desc' ? 'asc' : 'desc' }))} className="border hairline px-2.5 py-1.5 text-xs">{sort.dir === 'desc' ? '↓' : '↑'}</button></div>
       </div>
     </section>
@@ -156,7 +160,7 @@ export default function TransactionsPage() {
         const expanded = expandedId === transaction.id;
         const toggle = () => setExpandedId(expanded ? null : transaction.id);
         return <Fragment key={transaction.id}>
-          <tr className={`border-b hairline ${transaction.is_ignored ? 'opacity-40' : ''} ${expanded ? 'bg-white/60' : ''}`}>
+          <tr className={`border-b hairline ${transaction.is_ignored && !showingIgnored ? 'opacity-40' : ''} ${expanded ? 'bg-white/60' : ''}`}>
             <td className="py-5"><button onClick={toggle} aria-label={expanded ? 'Collapse details' : 'Expand details'} className="text-ink/40 hover:text-gold">{expanded ? '−' : '+'}</button></td>
             <td className="cursor-pointer text-ink/55" onClick={toggle}>{transaction.date}{dateEdited && <Dot />}</td>
             <td className="cursor-pointer" onClick={toggle}>{transaction.name}</td>
@@ -184,7 +188,7 @@ export default function TransactionsPage() {
       const dateEdited = transaction.original_date !== null && transaction.original_date !== transaction.date;
       const account = accountOf(transaction);
       const expanded = expandedId === transaction.id;
-      return <div key={transaction.id} className={`border-b hairline py-4 ${transaction.is_ignored ? 'opacity-40' : ''}`}>
+      return <div key={transaction.id} className={`border-b hairline py-4 ${transaction.is_ignored && !showingIgnored ? 'opacity-40' : ''}`}>
         <button onClick={() => setExpandedId(expanded ? null : transaction.id)} className="flex w-full items-start justify-between gap-3 text-left"><span><span className="block text-sm">{transaction.name}</span><span className="mt-1 block text-xs text-ink/55">{formatDate(transaction.date)}{dateEdited && <Dot />}</span></span><span className={`whitespace-nowrap text-sm ${isIncome ? 'text-forest' : ''}`}>{text}{amountEdited && <Dot />}</span></button>
         <div className="mt-3 flex flex-wrap items-center gap-3"><select value={transaction.category_id ?? ''} onChange={e => updateCategory(transaction.id, e.target.value, transaction.name)} className="min-w-[140px] flex-1 border hairline bg-transparent px-2 py-1.5 text-xs"><option value="">Other / unassigned</option>{categoryOptions}</select><button onClick={() => toggleIgnore(transaction)} className="text-[10px] uppercase tracking-wider text-ink/45">{transaction.is_ignored ? 'Restore' : 'Ignore'}</button></div>
         {expanded && <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-4 border-t hairline pt-4 text-xs">
