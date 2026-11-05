@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { createClient } from '@/lib/supabase/client';
+import { householdToday, toISODate } from '@/lib/reporting/period';
 
 type Row = { amount: number; date: string; categories: { parent_category: string } | { parent_category: string }[] | null };
 type Preset = { key: string; label: string; date: Date };
@@ -15,7 +16,6 @@ const money = (value: number) => `$${Math.round(value).toLocaleString()}`;
 const axisMoney = (value: number) => value >= 1000 ? `$${(value / 1000).toFixed(1).replace(/\.0$/, '')}k` : `$${value}`;
 const monthKey = (year: number, month: number) => `${year}-${String(month + 1).padStart(2, '0')}`;
 const daysInMonth = (year: number, month: number) => new Date(year, month + 1, 0).getDate();
-const toISODate = (date: Date) => date.toISOString().slice(0, 10);
 const monthLabel = (date: Date) => date.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
 
 function buildPresets(today: Date): Preset[] {
@@ -37,7 +37,7 @@ export function SpendPacing() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   // Frozen once per mount so preset boundaries stay stable across re-renders.
-  const [today] = useState(() => new Date());
+  const [today] = useState(() => householdToday());
   const presets = useMemo(() => buildPresets(today), [today]);
   const [lineAKey, setLineAKey] = useState(presets[0].key);
   const [lineBKey, setLineBKey] = useState(presets[1].key);

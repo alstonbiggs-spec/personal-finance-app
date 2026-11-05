@@ -1,6 +1,6 @@
 'use client';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { PERIOD_OPTIONS, resolvePeriod } from '@/lib/reporting/period';
+import { PERIOD_OPTIONS, householdToday, resolvePeriod } from '@/lib/reporting/period';
 
 // First year with data in the app; the year list grows on its own as time passes.
 const FIRST_YEAR = 2026;
@@ -41,7 +41,7 @@ export function FilterBar() {
     navigate(params);
   };
 
-  const now = new Date();
+  const now = householdToday();
   // Also reach back to the selected range's year (e.g. 2025 after switching from "Last Year").
   const firstYear = Math.min(FIRST_YEAR, Number(period.from.slice(0, 4)));
   const years = Array.from({ length: Math.max(1, now.getFullYear() - firstYear + 1) }, (_, index) => firstYear + index);

@@ -21,7 +21,24 @@ export function parsePeriodKey(value: string | undefined | null): PeriodKey {
   return PERIOD_OPTIONS.some((option) => option.value === value) ? (value as PeriodKey) : 'this-month';
 }
 
-function toISODate(date: Date) {
+// The household's calendar, not the machine's. Server code runs in UTC on Vercel, which is
+// already "next month" on the last evening of a month in Central time, while the browser is
+// still in the current one. Every "what is today?" question goes through householdToday() so
+// the server and browser always agree on the date.
+export const HOUSEHOLD_TIME_ZONE = 'America/Chicago';
+
+const householdDateParts = new Intl.DateTimeFormat('en-US', { timeZone: HOUSEHOLD_TIME_ZONE, year: 'numeric', month: 'numeric', day: 'numeric' });
+
+// Today's date in the household time zone, as a local-midnight Date. Its getFullYear(),
+// getMonth() and getDate() return the household's calendar date wherever the code runs.
+export function householdToday(at = new Date()): Date {
+  const parts = Object.fromEntries(householdDateParts.formatToParts(at).map((part) => [part.type, part.value]));
+  return new Date(Number(parts.year), Number(parts.month) - 1, Number(parts.day));
+}
+
+// "YYYY-MM-DD" from a Date's local calendar fields. Never use toISOString() for this: it
+// converts to UTC and can shift the date by a day.
+export function toISODate(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
@@ -45,7 +62,7 @@ const monthsBetween = (first: Date, last: Date) => (last.getFullYear() - first.g
 // `months` is how many calendar months the period touches (a partial current month counts
 // as a whole one) — monthly category budgets are multiplied by it so plan-vs-actual compares
 // like with like.
-export function resolvePeriod(params: PeriodParams, now = new Date()): ResolvedPeriod {
+export function resolvePeriod(params: PeriodParams, now = householdToday()): ResolvedPeriod {
   const key = parsePeriodKey(params.period);
   const year = now.getFullYear();
   const month = now.getMonth();
