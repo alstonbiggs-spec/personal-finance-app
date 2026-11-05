@@ -13,7 +13,7 @@ const signed = (item: ManualItem) => item.is_liability ? -Number(item.value) : N
 
 type Row = { key: string; title: string; subtitle: string; amount: number | null; manual?: ManualItem };
 
-export function NetWorthView({ accounts, initialItems, loadError }: { accounts: LinkedAccount[]; initialItems: ManualItem[]; loadError?: string }) {
+export function NetWorthView({ accounts, workingCapital = [], initialItems, loadError }: { accounts: LinkedAccount[]; workingCapital?: LinkedAccount[]; initialItems: ManualItem[]; loadError?: string }) {
   const supabase = createClient();
   const [items, setItems] = useState(initialItems);
   const [showForm, setShowForm] = useState(false);
@@ -21,7 +21,12 @@ export function NetWorthView({ accounts, initialItems, loadError }: { accounts: 
   const [form, setForm] = useState(emptyForm);
   const [status, setStatus] = useState(loadError ?? '');
 
-  const total = accounts.reduce((sum, account) => sum + Number(account.current_balance ?? 0), 0) + items.reduce((sum, item) => sum + signed(item), 0);
+  const balanceSum = (list: LinkedAccount[]) => list.reduce((sum, account) => sum + Number(account.current_balance ?? 0), 0);
+  const workingCapitalTotal = balanceSum(workingCapital);
+  const total = balanceSum(accounts) + workingCapitalTotal + items.reduce((sum, item) => sum + signed(item), 0);
+  const workingRows = workingCapital
+    .map(account => ({ key: account.id, title: `${account.institution} · ${account.name}`, subtitle: account.bucket, amount: account.current_balance === null ? null : Number(account.current_balance) }))
+    .sort((a, b) => a.title.localeCompare(b.title));
   // Linked and manual rows share one alphabetical list so they read as one set of holdings.
   const rows: Row[] = [
     ...accounts.map(account => ({ key: account.id, title: `${account.institution} · ${account.name}`, subtitle: account.bucket, amount: account.current_balance === null ? null : Number(account.current_balance) })),
@@ -78,7 +83,7 @@ export function NetWorthView({ accounts, initialItems, loadError }: { accounts: 
       </div>
     </form>}
     <section className="border-b hairline pb-8"><p className="label">Total</p><p className="serif mt-2 text-4xl text-forest">{money(total)}</p></section>
-    {rows.length === 0 ? <div className="border-t hairline py-16 text-center text-sm text-ink/50">No accounts to show yet. Use the plus sign to add one manually.</div> : <div className="mt-2 divide-y hairline border-t hairline">
+    {rows.length === 0 && workingRows.length === 0 ? <div className="border-t hairline py-16 text-center text-sm text-ink/50">No accounts to show yet. Use the plus sign to add one manually.</div> : <div className="mt-2 divide-y hairline border-t hairline">
       {rows.map(row => {
         const content = <>
           <div className="min-w-0">
@@ -96,6 +101,24 @@ export function NetWorthView({ accounts, initialItems, loadError }: { accounts: 
           : <div key={row.key} className="flex items-center justify-between gap-4 py-5">{content}</div>;
       })}
     </div>}
+    {workingRows.length > 0 && <section className="mt-10 border-t-2 border-ink/70 pt-6">
+      <div className="flex items-end justify-between gap-4">
+        <div><p className="label">Everyday accounts</p><h2 className="serif mt-1 text-2xl">Working Capital</h2></div>
+        <p className="serif shrink-0 text-xl text-forest">{money(workingCapitalTotal)}</p>
+      </div>
+      <div className="mt-4 divide-y hairline border-t hairline">
+        {workingRows.map(row => <div key={row.key} className="flex items-center justify-between gap-4 py-5">
+          <div className="min-w-0">
+            <p className="text-sm">{row.title}</p>
+            <p className="mt-1 text-xs uppercase tracking-wider text-ink/40">
+              {row.subtitle}
+              <span className="ml-2 rounded-sm border border-gold/50 px-1.5 py-px text-[9px] tracking-[.14em] text-gold">Linked</span>
+            </p>
+          </div>
+          <p className="serif shrink-0 text-xl">{money(row.amount)}</p>
+        </div>)}
+      </div>
+    </section>}
     {items.length > 0 && <p className="mt-6 text-xs text-ink/40">Tap a manual item to update its value or delete it.</p>}
   </main>;
 }
