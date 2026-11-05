@@ -49,5 +49,5 @@ Setup (from README): copy `.env.example` → `.env.local` (Supabase URL/anon key
 - Reporting periods come from `lib/reporting/period.ts`, set via `?period=` (presets, or `custom` with `&from=YYYY-MM&to=YYYY-MM`). `resolvePeriod` returns `months`, the number of calendar months the period touches. `categories.monthly_budget` is per month and gets multiplied by `months` for display. Reports exclude rows where `is_ignored = true`.
 
 ### UI conventions
-- Routes live under `app/(dashboard)/` (budget, budget/transactions, net-worth, future-expenses, ontology, profile) and share a layout with `Navigation` and `InactivityLogout`.
+- Routes live under `app/(dashboard)/` (budget, budget/transactions, federal-reserve, net-worth, future-expenses, profile) and share a layout with `Navigation` and `InactivityLogout`.
 - Custom Tailwind tokens and classes (`ink`, `gold`, `forest`, `hairline`, `serif`, `label`, `button-quiet`) are defined in `tailwind.config.ts` and `app/globals.css`. Pages are responsive: tables on `sm+`, stacked cards on mobile, so a UI change usually has to be made in both markups.

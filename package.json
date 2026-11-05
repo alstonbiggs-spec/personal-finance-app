@@ -12,6 +12,7 @@
     "@supabase/ssr": "^0.12.4",
     "@supabase/supabase-js": "^2.111.0",
     "date-fns": "^4.4.0",
+    "fflate": "^0.8.3",
     "next": "^16.2.12",
     "plaid": "^45.0.0",
     "react": "^19.2.8",

@@ -2,7 +2,7 @@
 import { Layer, Sankey, Tooltip } from 'recharts';
 import type { SankeyLinkProps, SankeyNodeProps } from 'recharts';
 
-// Same tones used everywhere else in the app (see spend-charts.tsx / money-flow.tsx) so
+// Same tones used everywhere else in the app (see spend-charts.tsx) so
 // a bucket always reads as the same color, wherever it shows up.
 const colors = ['#173d35', '#ad8a50', '#889e93', '#b5bcb3'];
 const bucketColors: Record<string, string> = { Needs: '#173d35', Wants: '#ad8a50', Savings: '#889e93' };

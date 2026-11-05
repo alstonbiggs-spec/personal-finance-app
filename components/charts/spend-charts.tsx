@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts';
 const colors = ['#173d35','#ad8a50','#889e93','#b5bcb3'];
 // Needs/wants/savings keep the same tones used everywhere else in the app (see
-// money-flow.tsx) so the same bucket always reads as the same color.
+// spend-sankey.tsx) so the same bucket always reads as the same color.
 const bucketColors: Record<string, string> = { Needs: '#173d35', Wants: '#ad8a50', Savings: '#889e93' };
 type ChartPoint = { name: string; value: number };
 const colorFor = (name: string, index: number) => bucketColors[name] ?? colors[index % colors.length];

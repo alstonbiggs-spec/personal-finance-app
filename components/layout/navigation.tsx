@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-const links = [['/budget','Budget'],['/net-worth','Net Worth'],['/future-expenses','Future Expenses'],['/ontology','Ontology'],['/profile','Profile']];
+const links = [['/budget','Budget'],['/federal-reserve','Fed Info'],['/net-worth','Net Worth'],['/future-expenses','Future Expenses'],['/profile','Profile']];
 export function Navigation() {
   const path = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
