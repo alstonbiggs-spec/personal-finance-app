@@ -11,7 +11,8 @@ export function parseNumber(raw: string) {
 }
 
 export function formatNumber(value: number, decimals: number) {
-  return value.toLocaleString(undefined, { maximumFractionDigits: decimals });
+  // A missing value (e.g. an input added while the page held older state) shows as 0 rather than crashing.
+  return (Number.isFinite(value) ? value : 0).toLocaleString(undefined, { maximumFractionDigits: decimals });
 }
 
 type TextProps = { value: number; onChange: (value: number) => void; prefix?: string; suffix?: string; decimals?: number; ariaLabel: string };

@@ -4,11 +4,15 @@ import type { MortgageInputs } from '@/lib/calculators/mortgage';
 import { AffordabilityCalculator, affordabilityDefaults } from './affordability-calculator';
 import { CarCalculator, carDefaults } from './car-calculator';
 import { MortgageCalculator, mortgageDefaults } from './mortgage-calculator';
+import { RetirementCalculator, retirementDefaults } from './retirement-calculator';
+import { TakeHomeCalculator, takeHomeDefaults } from './take-home-calculator';
 
 const calculators = [
   { id: 'mortgage', label: 'Mortgage Calculator', blurb: 'Your full monthly housing payment: principal, interest, taxes, insurance, PMI and HOA.' },
   { id: 'affordability', label: 'Home Affordability Calculator', blurb: 'The most house your income and debts support under typical lender limits.' },
   { id: 'car', label: 'Car Payment Calculator', blurb: 'Monthly payment and true cost of an auto loan, including tax, fees and trade-in.' },
+  { id: 'retirement', label: 'Retirement Calculator', blurb: 'How your savings grow until you retire, what they pay out each year after, and how long they last.' },
+  { id: 'take-home', label: 'Tax Bracket & Take-Home Pay', blurb: 'Your paycheck after federal and state income tax, Social Security, Medicare and pre-tax deductions, and where your salary falls in the federal brackets.' },
 ] as const;
 type CalculatorId = typeof calculators[number]['id'];
 
@@ -18,6 +22,8 @@ export function FinanceCalculatorView() {
   const [mortgage, setMortgage] = useState(mortgageDefaults);
   const [affordability, setAffordability] = useState(affordabilityDefaults);
   const [car, setCar] = useState(carDefaults);
+  const [takeHome, setTakeHome] = useState(takeHomeDefaults);
+  const [retirement, setRetirement] = useState(retirementDefaults);
   const current = calculators.find(calculator => calculator.id === selected)!;
 
   const openInMortgage = (inputs: MortgageInputs) => {
@@ -43,5 +49,7 @@ export function FinanceCalculatorView() {
     {selected === 'mortgage' && <MortgageCalculator inputs={mortgage} onChange={setMortgage} />}
     {selected === 'affordability' && <AffordabilityCalculator inputs={affordability} onChange={setAffordability} onOpenInMortgage={openInMortgage} />}
     {selected === 'car' && <CarCalculator inputs={car} onChange={setCar} />}
+    {selected === 'retirement' && <RetirementCalculator inputs={retirement} onChange={setRetirement} />}
+    {selected === 'take-home' && <TakeHomeCalculator inputs={takeHome} onChange={setTakeHome} />}
   </main>;
 }

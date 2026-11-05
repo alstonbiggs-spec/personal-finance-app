@@ -82,7 +82,7 @@ export function Chips({ options, value, onChange, format }: { options: number[];
 export function Toggle<T extends string>({ label, hint, options, value, onChange }: { label: string; hint?: string; options: { value: T; label: string }[]; value: T; onChange: (value: T) => void }) {
   return <div>
     <div className="flex items-baseline justify-between gap-3"><span className="label">{label}</span>{hint && <span className="text-[11px] text-ink/40">{hint}</span>}</div>
-    <div className="mt-3 grid grid-cols-2 rounded-sm border hairline p-1">{options.map(option => <button key={option.value} type="button" aria-pressed={value === option.value} onClick={() => onChange(option.value)} className={`rounded-sm py-2.5 text-xs uppercase tracking-[.12em] transition ${value === option.value ? 'bg-forest text-white' : 'text-ink/55 hover:text-ink'}`}>{option.label}</button>)}</div>
+    <div className={`mt-3 grid rounded-sm border hairline p-1 ${options.length === 4 ? 'grid-cols-2 sm:grid-cols-4' : options.length === 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>{options.map(option => <button key={option.value} type="button" aria-pressed={value === option.value} onClick={() => onChange(option.value)} className={`rounded-sm py-2.5 text-xs uppercase tracking-[.12em] transition ${value === option.value ? 'bg-forest text-white' : 'text-ink/55 hover:text-ink'}`}>{option.label}</button>)}</div>
   </div>;
 }
 
