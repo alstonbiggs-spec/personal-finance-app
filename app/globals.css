@@ -13,3 +13,19 @@ button, select, input { font: inherit; }
   .button-quiet { @apply rounded-sm border hairline px-4 py-2 text-xs uppercase tracking-[.14em] text-ink transition hover:bg-white; }
   .label { @apply text-[10px] uppercase tracking-[.18em] text-ink/50; }
 }
+
+/* Range sliders: a thin filled track with a large thumb that's easy to grab on a phone.
+   --fill is set inline to the thumb's position. pan-y keeps vertical swipes scrolling the page. */
+.range { -webkit-appearance: none; appearance: none; width: 100%; height: 32px; background: transparent; cursor: pointer; touch-action: pan-y; }
+.range:focus { outline: none; }
+.range::-webkit-slider-runnable-track { height: 4px; border-radius: 9999px; background: linear-gradient(to right, #173d35 var(--fill, 0%), #e8ebe5 var(--fill, 0%)); }
+.range::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; margin-top: -10px; border-radius: 50%; background: #fff; border: 2px solid #173d35; box-shadow: 0 1px 4px rgba(24,35,31,.25); }
+.range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px rgba(23,61,53,.2); }
+.range::-moz-range-track { height: 4px; border-radius: 9999px; background: #e8ebe5; }
+.range::-moz-range-progress { height: 4px; border-radius: 9999px; background: #173d35; }
+.range::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: #fff; border: 2px solid #173d35; box-shadow: 0 1px 4px rgba(24,35,31,.25); }
+@media (pointer: coarse) {
+  .range { height: 40px; }
+  .range::-webkit-slider-thumb { width: 30px; height: 30px; margin-top: -13px; }
+  .range::-moz-range-thumb { width: 28px; height: 28px; }
+}
