@@ -32,7 +32,9 @@ export const retirementDefaults: RetirementInputs = {
 };
 
 const ink = '#18231f';
-type Dollars = 'today' | 'future';
+export type Dollars = 'today' | 'future';
+export const DOLLARS: readonly Dollars[] = ['today', 'future'];
+export const RETURN_MODELS: readonly ReturnModel[] = ['steady', 'random', 'historical'];
 
 const models: { value: ReturnModel; label: string; hint: string }[] = [
   { value: 'steady', label: 'Steady', hint: 'The same return every year' },
@@ -65,9 +67,9 @@ function LegendKey({ kind, color, label }: { kind: 'line' | 'dash' | 'band'; col
   </span>;
 }
 
-export function RetirementCalculator({ inputs, onChange }: { inputs: RetirementInputs; onChange: (inputs: RetirementInputs) => void }) {
+// `dollars` lives in the parent so it's saved with the inputs.
+export function RetirementCalculator({ inputs, onChange, dollars, onDollarsChange: setDollars }: { inputs: RetirementInputs; onChange: (inputs: RetirementInputs) => void; dollars: Dollars; onDollarsChange: (dollars: Dollars) => void }) {
   const set = <K extends keyof RetirementInputs>(key: K) => (value: RetirementInputs[K]) => onChange({ ...inputs, [key]: value });
-  const [dollars, setDollars] = useState<Dollars>('today');
   const [seed, setSeed] = useState(1);
   const today = dollars === 'today';
   const model = inputs.returnModel ?? 'steady';

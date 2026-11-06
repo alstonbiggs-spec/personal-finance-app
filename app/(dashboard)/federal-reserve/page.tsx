@@ -3,8 +3,10 @@ import { YieldCurveChart, type YieldPoint } from '@/components/charts/yield-curv
 import { fetchFredSeries, yearsAgo, type FredPoint } from '@/lib/fred';
 import { fetchPinkSheet } from '@/lib/world-bank';
 
-// Regenerate every 6 hours, matching the FRED fetch cache in lib/fred.ts.
-export const revalidate = 21600;
+// Render on every request so the numbers are current when the page opens. A static/ISR
+// page is served stale first and only regenerated in the background (see lib/fred.ts).
+// World Bank metals data is still cached for a day in lib/world-bank.ts; it's monthly.
+export const dynamic = 'force-dynamic';
 
 // Series ids: DGS10 = 10-year Treasury constant maturity (daily), CPIAUCSL with pc1 =
 // year-over-year CPI inflation (monthly), DCOILWTICO = WTI crude spot price (daily),

@@ -26,7 +26,7 @@ Setup (from README): copy `.env.example` → `.env.local` (Supabase URL/anon key
   - `server.ts`: server components and route handlers (cookie session, RLS applies)
   - `client.ts`: `'use client'` components (browser session, RLS applies)
   - `admin.ts`: service-role client. It bypasses RLS and is the **only** way to touch `plaid_items`, which has no authenticated-user policy and holds Plaid access tokens. Use it only on the server (in `lib/plaid/*` and `app/api/plaid/*`).
-- RLS is "any authenticated user can do anything" on every table except `plaid_items`. The app is shared by the whole household, so there is no per-user data scoping.
+- RLS is "any authenticated user can do anything" on every table except `plaid_items` and `calculator_inputs`. The app is shared by the whole household, so there is no per-user data scoping, with one deliberate exception: `calculator_inputs` (each person's saved Finance Calculator inputs, one JSON row per user) is limited to `user_id = auth.uid()` so the two people's scenarios don't overwrite each other. Saved inputs are untrusted and go through `restoreInputs` in `lib/calculators/saved-inputs.ts`, so when you add a calculator input, give it a default and it will restore correctly.
 - Most interactive views read and write Supabase **directly from client components** (e.g. `components/budget/category-table.tsx`, `app/(dashboard)/budget/transactions/page.tsx`). There are no API routes for CRUD. Server components (e.g. `budget/page.tsx`) do the read-only aggregation.
 
 ### Plaid sync pipeline (`lib/plaid/`)
